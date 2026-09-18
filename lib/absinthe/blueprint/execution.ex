@@ -43,7 +43,9 @@ defmodule Absinthe.Blueprint.Execution do
     context: %{},
     root_value: %{},
     pending: [],
-    resolved: %{}
+    resolved: %{},
+    incremental: nil,
+    incremental_subscription: false
   ]
 
   @type t :: %__MODULE__{
@@ -60,6 +62,9 @@ defmodule Absinthe.Blueprint.Execution do
           | Result.Leaf
           | Result.Pending
 
+  def get(%{execution: %{incremental: %{frame: frame}} = exec}, _operation)
+      when not is_nil(frame), do: exec
+
   def get(%{execution: %{result: nil} = exec} = bp_root, operation) do
     result = %Result.Object{
       root_value: exec.root_value,
@@ -71,6 +76,12 @@ defmodule Absinthe.Blueprint.Execution do
       | result: result,
         adapter: bp_root.adapter,
         schema: bp_root.schema,
+        incremental_subscription:
+          operation.type == :subscription and
+            match?(
+              %{definition: Absinthe.Type.BuiltIns.IncrementalDirectives},
+              Absinthe.Schema.lookup_directive(bp_root.schema, :defer)
+            ),
         fragments: Map.new(bp_root.fragments, &{&1.name, &1})
     }
   end

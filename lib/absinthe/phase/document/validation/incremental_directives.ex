@@ -1,0 +1,235 @@
+defmodule Absinthe.Phase.Document.Validation.IncrementalDirectives do
+  @moduledoc false
+
+  use Absinthe.Phase
+
+  alias Absinthe.{Blueprint, Phase, Type}
+  alias Absinthe.Blueprint.{Document, Input}
+
+  @spec run(Blueprint.t(), Keyword.t()) :: Phase.result_t()
+  def run(input, _options \\ []) do
+    if enabled?(input.schema) do
+      validate(input)
+    else
+      {:ok, input}
+    end
+  end
+
+  @doc false
+  @spec enabled?(Absinthe.Schema.t()) :: boolean
+  def enabled?(schema) do
+    Enum.any?([:defer, :stream], fn name ->
+      match?(
+        %{definition: Absinthe.Type.BuiltIns.IncrementalDirectives},
+        Absinthe.Schema.lookup_directive(schema, name)
+      )
+    end)
+  end
+
+  defp validate(input) do
+    {input, {_, errors}} = Blueprint.prewalk(input, {%{}, []}, &validate_node/2)
+    fragments = Map.new(input.fragments, &{&1.name, &1})
+
+    errors =
+      Enum.reduce(input.operations, errors, fn operation, errors ->
+        errors =
+          if operation.type in [:mutation, :subscription] do
+            {errors, _} =
+              validate_selections(operation.selections, fragments, MapSet.new(), errors, :root)
+
+            errors
+          else
+            errors
+          end
+
+        if operation.type == :subscription do
+          {errors, _} =
+            validate_selections(
+              operation.selections,
+              fragments,
+              MapSet.new(),
+              errors,
+              :subscription
+            )
+
+          errors
+        else
+          errors
+        end
+      end)
+
+    {:ok, %{input | errors: input.errors ++ Enum.reverse(Enum.uniq(errors))}}
+  end
+
+  defp validate_node(%Blueprint.Directive{} = directive, {labels, errors}) do
+    if incremental?(directive) do
+      case raw_argument(directive, :label) do
+        %Input.Variable{} ->
+          {directive,
+           {labels,
+            [
+              error("Directive `#{directive.name}` label must be a string literal.", directive)
+              | errors
+            ]}}
+
+        %Input.String{value: label} ->
+          case Map.fetch(labels, label) do
+            {:ok, previous} ->
+              {directive,
+               {labels,
+                [
+                  error("Incremental directive label `#{label}` must be unique.", [
+                    previous,
+                    directive
+                  ])
+                  | errors
+                ]}}
+
+            :error ->
+              {directive, {Map.put(labels, label, directive), errors}}
+          end
+
+        _ ->
+          {directive, {labels, errors}}
+      end
+    else
+      {directive, {labels, errors}}
+    end
+  end
+
+  defp validate_node(%Document.Field{schema_node: %{type: type}} = field, {labels, errors}) do
+    errors =
+      if list_type?(type) do
+        errors
+      else
+        field.directives
+        |> Enum.filter(&(incremental?(&1) and &1.schema_node.identifier == :stream))
+        |> Enum.reduce(errors, fn directive, errors ->
+          [
+            error("Directive `#{directive.name}` may only be used on list fields.", directive)
+            | errors
+          ]
+        end)
+      end
+
+    {field, {labels, errors}}
+  end
+
+  defp validate_node(node, acc), do: {node, acc}
+
+  defp list_type?(%Type.NonNull{of_type: type}), do: list_type?(type)
+  defp list_type?(%Type.List{}), do: true
+  defp list_type?(_), do: false
+
+  defp validate_selections(selections, fragments, visited, errors, mode) do
+    Enum.reduce(selections, {errors, visited}, fn selection, {errors, visited} ->
+      if mode == :subscription and may_be_excluded?(selection) do
+        {errors, visited}
+      else
+        errors = validate_selection(selection, errors, mode)
+
+        case selection do
+          %Document.Fragment.Spread{name: name} ->
+            if MapSet.member?(visited, name) do
+              {errors, visited}
+            else
+              visited = MapSet.put(visited, name)
+
+              case Map.get(fragments, name) do
+                nil ->
+                  {errors, visited}
+
+                fragment ->
+                  validate_selections(fragment.selections, fragments, visited, errors, mode)
+              end
+            end
+
+          %Document.Field{} when mode == :root ->
+            {errors, visited}
+
+          %{selections: nested} ->
+            validate_selections(nested, fragments, visited, errors, mode)
+        end
+      end
+    end)
+  end
+
+  defp validate_selection(selection, errors, mode) do
+    selection.directives
+    |> Enum.filter(&incremental?/1)
+    |> Enum.reduce(errors, fn directive, errors ->
+      case mode do
+        :root ->
+          [
+            error(
+              "Directive `#{directive.name}` is not allowed at a mutation or subscription root.",
+              directive
+            )
+            | errors
+          ]
+
+        :subscription ->
+          case raw_argument(directive, :if) do
+            %Input.Boolean{value: false} ->
+              errors
+
+            %Input.Variable{} ->
+              errors
+
+            _ ->
+              [
+                error(
+                  "Directive `#{directive.name}` must be disableable in a subscription operation.",
+                  directive
+                )
+                | errors
+              ]
+          end
+      end
+    end)
+  end
+
+  # A variable can exclude this selection at execution time. This validation is
+  # deliberately independent of the variables supplied for the selected operation.
+  defp may_be_excluded?(selection) do
+    Enum.any?(selection.directives, fn directive ->
+      case {directive.schema_node, raw_argument(directive, :if)} do
+        {%{identifier: :skip}, %Input.Boolean{value: false}} -> false
+        {%{identifier: :skip}, _} -> true
+        {%{identifier: :include}, %Input.Boolean{value: true}} -> false
+        {%{identifier: :include}, _} -> true
+        _ -> false
+      end
+    end)
+  end
+
+  @doc false
+  @spec incremental?(Blueprint.node_t()) :: boolean
+  def incremental?(%{
+        schema_node: %{
+          identifier: identifier,
+          definition: Absinthe.Type.BuiltIns.IncrementalDirectives
+        }
+      })
+      when identifier in [:defer, :stream], do: true
+
+  def incremental?(_), do: false
+
+  defp raw_argument(directive, name) do
+    case Enum.find(directive.arguments, fn
+           %{schema_node: %{identifier: ^name}} -> true
+           _ -> false
+         end) do
+      %{input_value: %{raw: %{content: value}}} -> value
+      _ -> nil
+    end
+  end
+
+  defp error(message, nodes) do
+    %Phase.Error{
+      phase: __MODULE__,
+      message: message,
+      locations: Enum.map(List.wrap(nodes), & &1.source_location)
+    }
+  end
+end

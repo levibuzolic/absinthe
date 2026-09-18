@@ -141,5 +141,53 @@ defmodule Absinthe do
     end
   end
 
+  @doc """
+  Evaluates a document with support for incremental delivery.
+
+  The schema must explicitly import
+  `Absinthe.Type.BuiltIns.IncrementalDirectives` to expose `@defer` and `@stream`.
+  This API accepts the same options as `run/3`.
+
+  When execution leaves deferred fields or streamed list items, the result is
+  an `Absinthe.Incremental` struct. Its `initial_result` is ready to deliver;
+  enumerating `subsequent_results` resolves and delivers the remaining work on
+  demand. Consume that enumerable once, in the request process. Stopping
+  enumeration leaves subsequent work unexecuted.
+
+  Documents with no effective incremental work, including invalid documents,
+  return the same result maps as `run/3`. `run/3` itself retains its single-result
+  behavior and executes imported incremental directives eagerly.
+
+  Incremental payloads follow the draft protocol identified in
+  `Absinthe.Incremental`. A transport adapter must explicitly support these
+  payloads; they are not an ordinary GraphQL response map.
+  """
+  @spec run_incremental(
+          binary | Absinthe.Language.Source.t() | Absinthe.Language.Document.t(),
+          Absinthe.Schema.t(),
+          run_opts
+        ) :: {:ok, result_t | Absinthe.Incremental.t()} | {:error, String.t()}
+  def run_incremental(document, schema, options \\ []) do
+    Absinthe.Incremental.run(document, schema, options)
+  end
+
+  @doc """
+  Like `run_incremental/3`, but raises `Absinthe.ExecutionError` on a pipeline error.
+
+  GraphQL validation and execution errors remain in the returned response,
+  matching `run!/3`.
+  """
+  @spec run_incremental!(
+          binary | Absinthe.Language.Source.t() | Absinthe.Language.Document.t(),
+          Absinthe.Schema.t(),
+          run_opts
+        ) :: result_t | Absinthe.Incremental.t() | no_return
+  def run_incremental!(document, schema, options \\ []) do
+    case run_incremental(document, schema, options) do
+      {:ok, result} -> result
+      {:error, err} -> raise ExecutionError, message: err
+    end
+  end
+
   defp pipeline_identity(pipeline, _options), do: pipeline
 end

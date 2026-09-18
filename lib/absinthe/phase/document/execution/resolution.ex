@@ -54,13 +54,30 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   defp perform_resolution(bp_root, operation, options) do
     exec = Execution.get(bp_root, operation)
 
+    exec =
+      if Keyword.get(options, :incremental, false) and is_nil(exec.incremental) do
+        %{exec | incremental: %Absinthe.Incremental.State{}}
+      else
+        exec
+      end
+
     plugins = bp_root.schema.plugins()
     run_callbacks? = Keyword.get(options, :plugin_callbacks, true)
 
     exec = plugins |> run_callbacks(:before_resolution, exec, run_callbacks?)
 
     common =
-      Map.take(exec, [:adapter, :context, :acc, :root_value, :schema, :fragments, :fields_cache])
+      Map.take(exec, [
+        :adapter,
+        :context,
+        :acc,
+        :root_value,
+        :schema,
+        :fragments,
+        :fields_cache,
+        :incremental,
+        :incremental_subscription
+      ])
 
     res =
       %Absinthe.Resolution{
@@ -72,6 +89,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         arguments: nil
       }
       |> Map.merge(common)
+      |> Map.put(:operation_type, operation.type)
 
     exec = do_perform_resolution(exec, operation, res)
 
@@ -82,6 +100,13 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   # First run: expand the operation into the result tree. Suspended fields
   # leave placeholders in the tree and are collected into the pending pool.
+  defp do_perform_resolution(%{result: nil, incremental: %{frame: frame}} = exec, _operation, res)
+       when not is_nil(frame) do
+    {result, res} = resolve_frame(frame, res)
+    exec = update_persisted_fields(exec, res)
+    %{exec | result: result, pending: Enum.reverse(res.pending)}
+  end
+
   defp do_perform_resolution(%{result: %{fields: nil}} = exec, operation, res) do
     {result, res} =
       exec.result
@@ -190,8 +215,26 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   # Absinthe.Phoenix.Controller.Result returns raw source values for objects
   # without subselections and merges them for `@put`).
   def walk_result(%{fields: nil} = result, bp_node, _schema_type, res, path) do
-    {fields, res} = resolve_fields(bp_node, res, result.root_value, path)
-    {%{result | fields: fields}, res}
+    try do
+      {fields, res} = resolve_fields(bp_node, res, result.root_value, path)
+      {%{result | fields: fields}, res}
+    catch
+      {:incremental_subscription, directive} ->
+        error =
+          error(
+            directive,
+            "The @defer directive is not supported on subscription operations.",
+            path,
+            %{}
+          )
+
+        {%Result.Leaf{
+           emitter: result.emitter,
+           value: nil,
+           extensions: result.extensions,
+           errors: [error]
+         }, res}
+    end
   end
 
   def walk_result(%Result.Leaf{} = result, _, _, res, _) do
@@ -225,20 +268,69 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         {[], res}
 
       parent_type ->
-        {fields, fields_cache} =
-          Absinthe.Resolution.Projector.project(
-            parent.selections,
-            parent_type,
-            path,
-            res.fields_cache,
-            res
-          )
-
-        res = %{res | fields_cache: fields_cache}
+        {fields, res} = project_fields(parent, parent_type, source, path, res)
 
         {values, res} = do_resolve_fields(fields, res, source, parent_type, path, [])
         {values, %{res | path: path}}
     end
+  end
+
+  defp project_fields(
+         parent,
+         parent_type,
+         source,
+         path,
+         %{operation_type: :subscription, incremental_subscription: true} = res
+       ) do
+    {fields, projected} =
+      Absinthe.Incremental.Planner.project(
+        parent,
+        parent_type,
+        source,
+        path,
+        %{res | incremental: %Absinthe.Incremental.State{}}
+      )
+
+    {fields, %{projected | incremental: res.incremental}}
+  end
+
+  defp project_fields(parent, parent_type, source, path, %{incremental: %{}} = res) do
+    Absinthe.Incremental.Planner.project(parent, parent_type, source, path, res)
+  end
+
+  defp project_fields(parent, parent_type, _source, path, res) do
+    {fields, cache} =
+      Absinthe.Resolution.Projector.project(
+        parent.selections,
+        parent_type,
+        path,
+        res.fields_cache,
+        res
+      )
+
+    {fields, %{res | fields_cache: cache}}
+  end
+
+  defp resolve_frame(%{kind: :defer} = frame, res) do
+    res = %{res | delivery: frame.groups}
+
+    {fields, res} =
+      do_resolve_fields(frame.fields, res, frame.source, frame.parent_type, frame.path, [])
+
+    {%Result.Object{root_value: frame.source, emitter: frame.emitter, fields: fields}, res}
+    |> propagate_null_trimming()
+  end
+
+  defp resolve_frame(%{kind: :stream, values: [value | _]} = frame, res) do
+    path = [frame.index | frame.path]
+    res = %{res | delivery: MapSet.new(), path: path}
+    errors = maybe_add_non_null_error([], value, frame.item_type)
+
+    value
+    |> to_result(frame.emitter, frame.item_type, frame.extensions)
+    |> add_errors(errors, &put_result_error_value(&1, &2, frame.emitter, frame.source, path))
+    |> walk_result(frame.emitter, frame.item_type, res, path)
+    |> propagate_null_trimming()
   end
 
   defp get_return_type(%{schema_node: %Type.Field{type: type}}) do
@@ -293,8 +385,11 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     {emitter, res} = prepared_emitter(res, field, parent_type, path)
     full_type = emitter.schema_node.type
 
-    case Type.unwrap(full_type) do
-      %struct{} when struct in [Type.Union, Type.Interface] ->
+    case {Absinthe.Incremental.State.directive(field, "stream"), Type.unwrap(full_type)} do
+      {{_, _}, _} ->
+        resolve_field(field, res, source, parent_type, path)
+
+      {_, %struct{}} when struct in [Type.Union, Type.Interface] ->
         resolve_field(field, res, source, parent_type, path)
 
       _ ->
@@ -348,9 +443,17 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
          acc: acc,
          context: context,
          fields_cache: cache,
-         pending: pending
+         pending: pending,
+         incremental: incremental
        }) do
-    %{dest | acc: acc, context: context, fields_cache: cache, pending: pending}
+    %{
+      dest
+      | acc: acc,
+        context: context,
+        fields_cache: cache,
+        pending: pending,
+        incremental: incremental
+    }
   end
 
   defp build_resolution_struct(
@@ -424,6 +527,9 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         _ -> nil
       end
 
+    {value, res, stream_errors} = prepare_stream(value, bp_field, full_type, res, source, path)
+    errors = errors ++ stream_errors
+    value = if stream_errors == [], do: value, else: nil
     errors = maybe_add_non_null_error(errors, value, full_type)
 
     value
@@ -431,6 +537,80 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     |> add_errors(Enum.reverse(errors), &put_result_error_value(&1, &2, bp_field, source, path))
     |> walk_result(bp_field, full_type, res, path)
     |> propagate_null_trimming
+  end
+
+  defp prepare_stream(nil, _field, _full_type, res, _source, _path), do: {nil, res, []}
+
+  defp prepare_stream(value, field, full_type, res, source, path) do
+    case Absinthe.Incremental.State.directive(field, "stream") do
+      {_, _} when res.operation_type == :subscription ->
+        {nil, res, ["The @stream directive is not supported on subscription operations."]}
+
+      {_, %{initial_count: count}} when count < 0 ->
+        {nil, res, ["The initialCount argument to @stream must be a non-negative integer."]}
+
+      {_, args} when not is_nil(res.incremental) and is_list(value) ->
+        {prefix, tail} = Enum.split(value, Map.get(args, :initial_count, 0))
+
+        if tail == [] do
+          {prefix, res, []}
+        else
+          %Type.List{of_type: item_type} = nullable_type(full_type)
+
+          {group, state} =
+            Absinthe.Incremental.State.group(res.incremental, %{
+              kind: :stream,
+              path: Absinthe.Incremental.State.path(path),
+              label: args[:label],
+              parent: nil
+            })
+
+          state =
+            Absinthe.Incremental.State.enqueue(state, %{
+              kind: :stream,
+              groups: MapSet.new([group]),
+              values: tail,
+              index: length(prefix),
+              path: path,
+              emitter: %{
+                field
+                | field_details: Enum.map(field.field_details, fn {node, _} -> {node, nil} end)
+              },
+              item_type: item_type,
+              source: source,
+              extensions: res.extensions
+            })
+
+          {prefix, %{res | incremental: state}, []}
+        end
+
+      _ ->
+        {value, res, []}
+    end
+  end
+
+  defp nullable_type(%Type.NonNull{of_type: type}), do: type
+  defp nullable_type(type), do: type
+
+  defp prepared_emitter(
+         %{incremental: %{}, fields_cache: cache} = res,
+         bp_field,
+         parent_type,
+         path
+       ) do
+    key = {:emitter_type, Absinthe.Resolution.Projector.cache_key(path, parent_type.identifier)}
+
+    {full_type, res} =
+      case Map.fetch(cache, key) do
+        {:ok, full_type} ->
+          {full_type, res}
+
+        :error ->
+          full_type = Type.expand(bp_field.schema_node.type, res.schema)
+          {full_type, %{res | fields_cache: Map.put(cache, key, full_type)}}
+      end
+
+    {put_in(bp_field.schema_node.type, full_type), res}
   end
 
   defp prepared_emitter(%{fields_cache: cache} = res, bp_field, parent_type, path) do
