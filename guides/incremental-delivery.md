@@ -211,6 +211,13 @@ The eager `Absinthe.run/3` API remains available for clients and transports that
 accept only ordinary GraphQL responses. Do not pass an `Absinthe.Incremental`
 struct to a JSON encoder as if it were a response map.
 
+The repository includes a client-over-HTTP test harness in
+`integration/incremental_http`, using Apollo Client's `GraphQL17Alpha9Handler`
+and a test-only local multipart adapter. Run it with
+`integration/incremental_http/run`. Its README records pinned versions,
+verified cases, and known client limitations; it does not add production
+incremental support to Absinthe Plug.
+
 ## Draft interpretation
 
 The pinned draft contains contradictory wording in its subscription validation

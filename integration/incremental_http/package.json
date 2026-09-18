@@ -1,0 +1,21 @@
+{
+  "name": "absinthe-incremental-http-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format:check": "prettier --check '*.mjs' package.json",
+    "test": "node --test --test-concurrency=1 --test-timeout=30000 client.test.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@apollo/client": "4.3.0",
+    "graphql": "16.12.0",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "graphql-reference": "npm:graphql@17.0.0-alpha.9",
+    "prettier": "3.8.1"
+  }
+}

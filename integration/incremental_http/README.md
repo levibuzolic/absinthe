@@ -1,0 +1,175 @@
+# Incremental delivery over HTTP
+
+From the repository root:
+
+```sh
+integration/incremental_http/run
+```
+
+Requires Elixir/OTP, Mix/Hex/Rebar, Node.js 24+ and npm on PATH. CI pins Node **24.21.0**,
+Elixir **1.19.5** and OTP **28.5**. The runner installs the committed Mix/npm
+lockfiles, compiles with warnings as errors, checks formatting, and runs the
+tests. After installation/compilation, `npm test` in this directory runs just
+the HTTP suite. No separately running service or fixed port is needed.
+
+This is a **test-only HTTP adapter**, not an implementation in Absinthe Plug.
+The root library's dependencies and public APIs are unchanged. All harness
+dependencies, build products and npm packages stay in this directory.
+
+## Protocol and client selection
+
+| Component | Pinned version / revision |
+| --- | --- |
+| Absinthe | Local checkout, including core fixes `d66f7e3536deae4988226f380ee1da4669964290` after feature commit `4a96b2bb35bcd9a67bae54b2f0cd89b21b090c92` |
+| Core proposal | GraphQL spec PR #1110, `045e19363c2b55f127960bd3b5e8072a15b29aec` |
+| Apollo Client | `@apollo/client` **4.3.0**, source `d4f87701204441f66b40db157b2bbd8783e46e57` |
+| Incremental handler | Apollo's `GraphQL17Alpha9Handler` |
+| HTTP negotiation | `multipart/mixed;incrementalSpec=v0.2` |
+| GraphQL client parser | `graphql` **16.12.0** (not a JavaScript execution server) |
+| Independent execution probe | `graphql-reference` alias for `graphql` **17.0.0-alpha.9**, source `3283f8adf52e77a47f148ff2f30185c8d11ff0f0` |
+| RxJS / JSON codec | **7.8.2** / Jason **1.4.4** |
+| HTTP server | Node's built-in `node:http`, **24.21.0** in CI |
+
+The initial plan was to verify the client revision before building the adapter,
+prove one deferred response through HTTP, then add streaming, composition,
+errors and cancellation. Inspection of the published Apollo package and its
+[pinned handler source](https://github.com/apollographql/apollo-client/blob/d4f87701204441f66b40db157b2bbd8783e46e57/src/incremental/handlers/graphql17Alpha9.ts)
+confirmed support for `pending`, string `id`, `incremental`, `subPath`, `items`,
+`completed` (including errors), and `hasNext`. The handler advertises
+[incremental v0.2](https://specs.apollo.dev/incremental/v0.2/). The older
+`Defer20220824Handler` uses a different protocol and is not used here.
+
+The matching payload vocabulary establishes a candidate, not proof of complete
+draft compatibility. The tests establish interoperability only for the cases
+that reconstruct correctly below. The core proposal revision and GraphQL.js
+alpha.9 are not claimed to have identical execution semantics. No adapter
+translates between protocol versions, inserts patches, or repairs client data.
+
+## What runs
+
+`client.test.mjs` starts a loopback listener on an OS-assigned port. Apollo's
+`watchQuery` sends actual POST requests through `HttpLink` and native Fetch.
+Apollo's multipart reader parses the response and its incremental handler
+constructs each observed result. Most tests use `no-cache` to isolate request
+results; a separate `network-only` case verifies normalized cache contents.
+
+The HTTP adapter forwards GraphQL documents, variables and operation names to
+an Elixir subprocess over JSON lines. Each request has one monitored worker
+that calls `Absinthe.run_incremental!/3` and owns the subsequent enumerable.
+The bridge serializes the original payload maps without modifying their shape.
+An Apollo link taps **already parsed network payloads** solely for comparison
+with the server's emitted maps and for pending-ID lifecycle assertions. The
+test code contains no incremental data merger or multipart parser.
+
+Tests grant continuation permits out of band, one at a time. A suspended
+`Enumerable.reduce` prevents even the next resolver from running until its
+permit arrives. Assertions on resolver events therefore establish causality
+without timing sleeps. Another test starts a blocked resolver, observes the
+initial Apollo result while that resolver is blocked, and explicitly releases
+it. Timeouts are failure deadlines, never synchronization delays.
+
+Each multipart part includes the following boundary immediately. Holding that
+boundary until another payload exists would buffer Apollo's first result and
+deadlock the gated test. One case writes parts in seven-byte fragments; TCP
+may coalesce those writes, so the suite does not claim control over packet or
+Fetch chunk boundaries. There is no reverse proxy or compression layer here.
+The gate also bounds outstanding work; this is not a production throughput or
+socket-backpressure test.
+
+The adapter recognizes the tested v0.2 and JSON Accept alternatives, ignores
+entries with `q=0`, and rejects unsupported-only alternatives with 406. JSON
+negotiation executes `Absinthe.run!/3` eagerly. Ordinary results use JSON even
+when the request contains disabled or ineffective incremental directives.
+This small negotiation helper is not a general HTTP content-negotiation library.
+
+## Coverage and known client failures
+
+Successful reconstruction cases cover:
+
+- Aliases, explicit labels, variables, `initialCount`, and progressive arrays.
+- Nested defer, stream inside defer, and defer inside streamed items.
+- Shared eager/deferred and sibling deferred fields, `subPath`, resolver-once.
+- Atomic deferred groups spanning several gated list items, unpublished stream
+  cancellation, and completed nested child data surviving a sibling failure.
+- Disabled directives, empty lists, null parents and eager JSON fallback.
+- Nullable incremental errors, non-null deferred and stream-boundary errors,
+  error paths/locations, initial failures, and invalid variables.
+- Final completion, unique IDs, no unresolved IDs, closed responses and stopped
+  request workers; malformed requests, truncated multipart bodies and
+  unsupported protocol negotiation.
+
+Two **known Apollo 4.3.0 limitations are asserted**, not skipped or represented
+as successful client support:
+
+1. **A stream introduced inside a streamed item loses its items.** For
+   `{ people @stream(initialCount: 0) { friends @stream(initialCount: 0) { name } } }`,
+   Apollo receives both inner items and their completion but leaves `friends`
+   empty. **GraphQL.js 17.0.0-alpha.9 reproduces the same incorrect client
+   result through the same HTTP encoder and Apollo client.** The exact
+   [captured payloads](reference-payloads.json) have identical initial responses.
+   Absinthe emits five subsequent responses, interleaving outer and inner
+   items; GraphQL.js batches all three outer and both inner items and their
+   completions into one subsequent response. Both announce the inner ID at
+   `["people", 0, "friends"]` with its containing item and deliver Grace/Edsger
+   using that ID. The pinned handler initializes stream positions from initial
+   and deferred data, but not from streamed items. Thus the inner position is
+   undefined when it calculates item indexes. The test verifies both engines'
+   delivered names, complete wire lifecycle, and exact incorrect client result. Change
+   this test to assert the correct result when upgrading to a fixed client.
+2. **Unsubscribe produces an unhandled `AbortError`.** The
+   [pinned multipart reader](https://github.com/apollographql/apollo-client/blob/d4f87701204441f66b40db157b2bbd8783e46e57/src/link/http/parseAndCheckHttpResponse.ts)
+   calls `reader.cancel()` in `finally` without awaiting its rejected promise
+   after Fetch aborts. `cancellation.mjs` runs outside the Node test runner and
+   asserts exactly four matching rejections: three Absinthe cancellations and
+   one GraphQL.js alpha.9 cancellation using the same client and transport.
+   It also verifies socket closure,
+   worker termination and resolver traces for cancellation after the initial
+   result, after one stream item, and while a resolver is blocked. Unexpected
+   rejection counts/types/stacks fail the probe. Apollo is not patched and no
+   rejection handler is installed in the main test process.
+
+On disconnect the adapter kills the request worker; it does not merely ignore
+future payloads. The tests await both socket closure and worker `DOWN` before
+checking that no later fields ran. They do not promise to undo completed side
+effects or prevent work that started before the disconnect was observed.
+Resolvers that spawn detached work need their own lifecycle handling; these
+fixtures do not establish cancellation of arbitrary external services.
+
+Shutdown closes all listener connections, ends bridge stdin, awaits BEAM exit,
+and checks every tracked worker stopped. Forced process termination fails the
+test. Abandoned/cancelled responses intentionally retain pending IDs; the
+zero-pending assertion applies to successfully completed responses only.
+
+## Verification
+
+Verified locally on macOS on 2026-09-19:
+
+| Check | Result |
+| --- | --- |
+| One-command runner, Node 24.21.0 / Elixir 1.19.5 / OTP 28.5 | 22 tests passed, no failures or skips |
+| Harness compilation with warnings as errors, Mix format, pinned Prettier | Passed |
+| Full core suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,613 passed, 3 excluded |
+| Full core suite, same runtime, persistent-term provider | 1,613 passed, 3 excluded |
+| Ten repeated cancellation probes | 30 Absinthe cancellations and 10 reference comparisons passed |
+| Root formatting, documentation generation, `git diff --check` | Passed |
+
+Two of the 22 tests characterize the known client defects above; passing those
+tests does **not** mean those client behaviors work correctly. The two core
+lifecycle regressions failed against `4a96b2bb` (unpublished stream data leaked;
+a completed nested child's shared data was lost), then passed unchanged after
+the coordinated rebase onto `d66f7e35`. No production workaround was added for
+either client-specific defect. The captured reference payloads were rechecked
+after the rebase and are unchanged. Documentation generation retains existing
+MakeupGraphql deprecations and hidden-type reference warnings.
+
+The separate GitHub Actions workflow pins the same harness runtime. It has
+been added for PRs and pushes to main; this local verification is not a claim
+that a remote CI run has completed.
+
+The reference bridge is used only to cross-check the client findings. It is
+not the Absinthe server, a replacement incremental merger, or proof that all
+execution semantics of GraphQL.js alpha.9 match the newer core proposal.
+
+The suite exercises an established client over HTTP, but the two findings
+above prevent a claim of complete Apollo interoperability. It does not certify
+Absinthe Plug, browsers, other clients, proxies, HTTP/2, SSE or WebSockets.
