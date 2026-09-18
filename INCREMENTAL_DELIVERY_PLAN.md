@@ -319,3 +319,58 @@ fixture (86/87 passed); the serial run passed all 87. No Plug production or test
 code was changed. Dialyzer caught an overly restrictive map contract in the new
 directive helper; it now requires the directives field while allowing the
 remaining blueprint fields, with no new warning suppressions.
+
+## Relay compatibility follow-up
+
+Relay compiler/runtime 21.0.1 does not accept the default proposal's ID-based
+incremental envelopes. A real HTTP test first reproduced its rejection after
+the initial response. The follow-up adds an explicit `incremental_format:
+:relay` option while retaining the default draft protocol.
+
+Implementation proceeded in tested slices: named deferred fragments; indexed
+stream items; deduplicated ancestor fragments and abstract type information;
+nested streams and defers; relative error paths and terminal boundary errors;
+then nullable-item replay and cursor pagination. The formatter reads execution
+group metadata because wire payloads alone omit ancestors with no independent
+work. It retains an indexed snapshot and emits complete deferred subtrees so
+Relay can normalize shared IDs and type discriminators without rerunning fields.
+
+The harness exports SDL from the real schema and runs the pinned Relay compiler
+before testing its artifacts. This exposed an existing SDL renderer defect:
+macro argument defaults were omitted. Export now uses the existing typed
+default-value renderer, including custom scalars, enums, input objects and
+nested nulls, without requiring a started persistent-term schema provider.
+Generated schema and compiler artifacts are not committed.
+
+The 22 Relay HTTP tests exercise Relay's normalized store and fragment readers,
+including `@stream_connection`, deferred page info, shared-store pagination,
+abstract types, nested delivery, errors and cancellation. A paginated null edge
+is replayed without duplicate nodes or cursor mismatch warnings, and the next
+page merges correctly. The suite explicitly characterizes rejection of modern
+draft envelopes and the compiler's scalar-list streaming restriction.
+
+Relay compatibility has documented costs and limits: deferred snapshots repeat
+previously delivered data, nullable streamed items require a final root replay,
+and failed boundaries terminate the operation because Relay lacks the draft's
+isolated failed-group notice. Expected development warnings from final replay
+are asserted. The HTTP adapter uses an application-defined negotiation token;
+production transport support remains a separate integration responsibility.
+
+Verification completed on 2026-09-19:
+
+| Check | Result |
+| --- | --- |
+| Clean full core suites, Elixir 1.20.3 / OTP 29.0.5, both schema providers | 1,621 passed per run; 3 excluded |
+| Clean full core suites, Elixir 1.19.5 / OTP 28.5, both schema providers | 1,621 tests per run; 0 failures, 3 excluded |
+| Fresh HTTP runner, Node 24.21.0 / Elixir 1.19.5 / OTP 28.5 | 44 passed: 22 Apollo and 22 Relay |
+| `mix dialyzer` | 0 errors; no new suppressions |
+| Root and harness formatting, `git diff --check` | Passed |
+| `mix docs` | Passed with existing documentation warnings |
+
+The existing scaling probe was also run with the Relay format on 500–4,000
+rows. At 4,000 rows, median continuation times were 10.73 ms for nullable values,
+12.66 ms for one shared group, 29.59 ms for nested groups, and 27.73 ms for
+streamed objects with deferred fields. These are local diagnostic measurements,
+not timing assertions or portable performance guarantees. The HTTP count
+includes the documented Apollo defect characterizations and Relay rejection
+tests; it does not imply that those unsupported cases now work.

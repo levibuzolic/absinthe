@@ -64,7 +64,8 @@ defmodule IncrementalHTTP.Bridge do
       root_value: IncrementalHTTP.Schema.root_value(),
       context: %{request_id: id},
       variables: request["variables"] || %{},
-      operation_name: request["operationName"]
+      operation_name: request["operationName"],
+      incremental_format: if(request["protocol"] == "relay", do: :relay, else: :draft)
     ]
 
     result =

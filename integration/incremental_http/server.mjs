@@ -55,6 +55,13 @@ function negotiate(accept = "*/*") {
       type === "multipart/mixed" &&
       params.incrementalspec === "v0.2",
   );
+  // Application-defined opt-in for this test adapter, not a standard version.
+  const relay = types.some(
+    ({ type, params, quality }) =>
+      quality > 0 &&
+      type === "multipart/mixed" &&
+      params.incrementalspec === "relay",
+  );
   const json = types.find(
     ({ type, quality }) =>
       quality > 0 &&
@@ -66,7 +73,8 @@ function negotiate(accept = "*/*") {
       ].includes(type),
   );
   return {
-    incremental,
+    incremental: incremental || relay,
+    relay,
     json:
       json?.type === "application/graphql-response+json"
         ? "application/graphql-response+json"
@@ -143,7 +151,11 @@ export async function startServer({ reference = false } = {}) {
     const isMultipart = session.payloads[0].hasNext === true;
     if (session.payloads.length === 1) {
       response.writeHead(200, {
-        "content-type": isMultipart ? multipart : session.jsonType,
+        "content-type": isMultipart
+          ? session.relay
+            ? 'multipart/mixed; boundary="absinthe-e2e"; incrementalSpec=relay'
+            : multipart
+          : session.jsonType,
         "cache-control": "no-store",
       });
       if (isMultipart) response.write(boundary);
@@ -196,6 +208,7 @@ export async function startServer({ reference = false } = {}) {
         payloads: [],
         accept: request.headers.accept,
         jsonType: negotiated.json || "application/json",
+        relay: negotiated.relay,
         fragmented: request.headers["x-test-fragmented"] === "true",
         truncate: request.headers["x-test-truncate"] === "true",
       };
@@ -216,6 +229,7 @@ export async function startServer({ reference = false } = {}) {
         variables: operation.variables,
         operationName: operation.operationName,
         incremental: negotiated.incremental,
+        protocol: negotiated.relay ? "relay" : "modern",
       });
       events.emit("change");
     } catch (error) {

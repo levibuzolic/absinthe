@@ -212,11 +212,77 @@ accept only ordinary GraphQL responses. Do not pass an `Absinthe.Incremental`
 struct to a JSON encoder as if it were a response map.
 
 The repository includes a client-over-HTTP test harness in
-`integration/incremental_http`, using Apollo Client's `GraphQL17Alpha9Handler`
-and a test-only local multipart adapter. Run it with
+`integration/incremental_http`, using Apollo Client's `GraphQL17Alpha9Handler`,
+Relay's compiler and runtime, and a test-only local multipart adapter. Run it with
 `integration/incremental_http/run`. Its README records pinned versions,
 verified cases, and known client limitations; it does not add production
 incremental support to Absinthe Plug.
+
+## Relay compatibility
+
+Relay 21.0.1 expects labeled `{data, label, path}` responses and an
+`extensions.is_final` marker. It does not directly consume the default draft's
+`pending`, `incremental`, and `completed` envelopes. Select its format explicitly:
+
+```elixir
+{:ok, result} =
+  Absinthe.run_incremental(compiled_query, MyApp.Schema,
+    variables: variables,
+    incremental_format: :relay
+  )
+```
+
+The return contract remains an ordinary map or an `Absinthe.Incremental` struct.
+Send `initial_result`, then enumerate `subsequent_results` in the request process.
+Relay responses retain `hasNext` for transport termination; `extensions.is_final`
+is reserved for Relay's completion tracking. Ordinary results also get both
+final markers. Result-phase extensions are preserved.
+
+Use operations produced by the Relay compiler, including its generated labels,
+IDs, `__typename`, and abstract-type discriminator selections. Configure
+`deferDeduplicatedFields: true` on Relay's `Environment`. Its `Network` must
+return an `Observable` that forwards every parsed response, completes when the
+transport ends, and aborts the request when unsubscribed. A promise returning
+only one JSON response cannot deliver these updates. Relay's
+[environment documentation](https://relay.dev/docs/api-reference/relay-runtime/relay-environment/)
+and [network-layer guide](https://relay.dev/docs/guides/network-layer/) describe
+these integration points.
+
+The formatter supplies accumulated snapshots for completed deferred fragments,
+including parent fragments with no independent work after deduplication. This
+preserves shared fields, object identity, abstract types, and deferred selections
+inside eager objects and lists. Streamed objects use individual indexed patches.
+Relay's `@stream_connection` compiler transform produces supported edges
+`@stream` and page-info `@defer` selections, including cursor pagination.
+
+Two compatibility behaviors differ from the default draft format:
+
+- A failed incremental boundary becomes a terminal Relay operation error.
+  Previously delivered cache data remains available, and later resolver work
+  stops. Relay has no equivalent to an isolated failed `completed` notice.
+  Nullable field errors remain attached to their data, with paths relative to
+  each Relay patch; terminal operation errors retain absolute paths.
+- Relay cannot normalize a null streamed item patch. Its slot is retained in
+  the server snapshot, non-null items continue progressively at their correct
+  indices, and the final response replays accumulated root data with
+  `is_final: true`. This also preserves errors that caused nullable items to
+  become null. Relay's development build can warn that this final replay used
+  non-streaming mode. The HTTP tests verify that behavior and the resulting
+  cache contents.
+
+The formatter retains delivered data until completion, and deferred snapshots
+can repeat fields already sent. That memory and wire cost is specific to Relay
+compatibility. Its compiler rejects `@stream` on scalar lists; use linked-object
+lists or connections. Relay's optional `use_customized_batch` compiler extension
+is not part of the supported draft directives and must remain disabled.
+
+The HTTP harness tests real Relay compiler/runtime 21.0.1 artifacts, generated
+from exported Absinthe SDL during the test run. Its observable network uses the
+`meros` multipart parser and forwards payloads directly to Relay. The harness's
+`incrementalSpec=relay` negotiation parameter is an application-defined test
+convention, not a standardized GraphQL HTTP protocol. Production transports must
+explicitly negotiate and select `incremental_format: :relay`; the core option
+does not configure Absinthe Plug or a client network layer automatically.
 
 ## Draft interpretation
 

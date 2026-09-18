@@ -1,3 +1,5 @@
 /_build/
 /deps/
 /node_modules/
+/relay/__generated__/
+/relay/schema.graphql

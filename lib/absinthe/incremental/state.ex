@@ -5,6 +5,7 @@ defmodule Absinthe.Incremental.State do
             ready: :gb_sets.empty(),
             next_job: 0,
             groups: %{},
+            group_ids: %{},
             unannounced: [],
             next_id: 0,
             next_frame: 0,
@@ -82,6 +83,7 @@ defmodule Absinthe.Incremental.State do
     %{
       state
       | groups: Map.put(state.groups, ref, %{group | id: id}),
+        group_ids: Map.put(state.group_ids, id, ref),
         ready: ready,
         completion_candidates: candidates,
         next_id: state.next_id + 1
