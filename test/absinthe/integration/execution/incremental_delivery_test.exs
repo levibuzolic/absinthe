@@ -1,6 +1,8 @@
 defmodule Absinthe.Integration.Execution.IncrementalDeliveryTest do
   use Absinthe.Case, async: true
 
+  alias Absinthe.Case.Assertions.Incremental
+
   defmodule Schema do
     use Absinthe.Schema
     use Absinthe.Fixture
@@ -498,61 +500,16 @@ defmodule Absinthe.Integration.Execution.IncrementalDeliveryTest do
     refute_received {:resolved, _}
   end
 
-  # A small transport consumer also checks the relationships between notices,
+  # An in-process payload consumer checks the relationships between notices,
   # results, and completion, independently of the executor's scheduling policy.
-  defp reconstruct(%{data: data}), do: data
+  defp reconstruct(result) do
+    {data, payloads} = Incremental.consume(result)
 
-  defp reconstruct(%{initial_result: initial, subsequent_results: subsequent}) do
-    payloads = [initial | Enum.to_list(subsequent)]
-    assert List.last(payloads).hasNext == false
-    assert Enum.all?(Enum.drop(payloads, -1), & &1.hasNext)
+    for payload <- payloads,
+        notice <- Map.get(payload, :completed, []) do
+      refute Map.has_key?(notice, :errors)
+    end
 
-    {data, pending, completed} =
-      Enum.reduce(payloads, {initial.data, %{}, MapSet.new()}, fn payload,
-                                                                  {data, pending, completed} ->
-        pending =
-          Enum.reduce(Map.get(payload, :pending, []), pending, fn notice, acc ->
-            assert is_binary(notice.id)
-            refute Map.has_key?(acc, notice.id)
-            Map.put(acc, notice.id, notice.path)
-          end)
-
-        data =
-          Enum.reduce(Map.get(payload, :incremental, []), data, fn entry, acc ->
-            assert Map.has_key?(pending, entry.id)
-            refute MapSet.member?(completed, entry.id)
-            path = Map.fetch!(pending, entry.id) ++ Map.get(entry, :subPath, [])
-
-            update_path(acc, path, fn previous ->
-              case entry do
-                %{data: fields} -> Map.merge(previous, fields)
-                %{items: items} -> previous ++ items
-              end
-            end)
-          end)
-
-        completed =
-          Enum.reduce(Map.get(payload, :completed, []), completed, fn notice, acc ->
-            assert Map.has_key?(pending, notice.id)
-            refute MapSet.member?(acc, notice.id)
-            refute Map.has_key?(notice, :errors)
-            MapSet.put(acc, notice.id)
-          end)
-
-        {data, pending, completed}
-      end)
-
-    assert MapSet.new(Map.keys(pending)) == completed
     data
-  end
-
-  defp update_path(value, [], fun), do: fun.(value)
-
-  defp update_path(values, [index | rest], fun) when is_integer(index) do
-    List.update_at(values, index, &update_path(&1, rest, fun))
-  end
-
-  defp update_path(value, [key | rest], fun) do
-    Map.update!(value, key, &update_path(&1, rest, fun))
   end
 end

@@ -28,6 +28,20 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalTest do
     end
   end
 
+  defmodule ReplaceFieldLocations do
+    use Absinthe.Phase
+
+    def run(blueprint, options) do
+      location = Keyword.fetch!(options, :location)
+
+      {:ok,
+       Absinthe.Blueprint.prewalk(blueprint, fn
+         %Absinthe.Blueprint.Document.Field{} = field -> %{field | source_location: location}
+         node -> node
+       end)}
+    end
+  end
+
   defmodule Schema do
     use Absinthe.Schema
     use Absinthe.Fixture
@@ -101,6 +115,50 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalTest do
 
   defp messages(document, options \\ []) do
     document |> errors(options) |> Enum.map(& &1.message)
+  end
+
+  test "overlap identity survives fields with missing or shared diagnostic locations" do
+    queries = [
+      "{ node { names @stream names } }",
+      "{ node { child { names @stream } } node { child { names } } }",
+      "{ node { ...Names ...Names } } fragment Names on Node { names @stream names }"
+    ]
+
+    for location <- [nil, %Absinthe.Blueprint.SourceLocation{line: 1, column: 1}],
+        query <- queries do
+      modifier = fn pipeline, _ ->
+        Pipeline.insert_before(
+          pipeline,
+          Phase.Document.Validation.IncrementalStreams,
+          {ReplaceFieldLocations, location: location}
+        )
+      end
+
+      assert {:ok, %{errors: [%{message: message}]}} =
+               Absinthe.run(query, Schema, pipeline_modifier: modifier)
+
+      assert message == "Fields `names` overlap and cannot use the `stream` directive."
+    end
+  end
+
+  test "fragment field identity stays stable across reuse without source locations" do
+    modifier = fn pipeline, _ ->
+      Pipeline.insert_before(
+        pipeline,
+        Phase.Document.Validation.IncrementalStreams,
+        {ReplaceFieldLocations, location: nil}
+      )
+    end
+
+    assert {:ok, %{data: %{"node" => %{"names" => ["hello"]}}}} =
+             Absinthe.run(
+               """
+               { node { ...Names ... on Node { ...Names } } }
+               fragment Names on Node { names @stream }
+               """,
+               Schema,
+               pipeline_modifier: modifier
+             )
   end
 
   test "adapted stream names still require list fields and prohibit overlapping fields" do

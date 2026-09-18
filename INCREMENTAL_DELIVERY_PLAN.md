@@ -208,7 +208,8 @@ directive definitions, middleware fixtures, coercion cases, and compatibility
 checks. Review findings about shared-group cancellation, premature publication
 of private fields, and adapted directive names were fixed and covered by tests.
 
-The change adds 95 regression tests. Checks performed on 2026-09-18:
+The initial implementation added 95 regression tests. Checks performed for
+commit `4a96b2bb` on 2026-09-18:
 
 | Check | Result |
 | --- | --- |
@@ -240,3 +241,81 @@ negotiation and framing. The stream resolver supplies an ordinary list; source
 pagination is not implicit. Consumers enumerate once in the request process;
 discarding or halting the enumerable prevents future incremental execution.
 The pinned proposal remains a draft, rather than a ratified GraphQL feature.
+
+## Follow-up maintainability and lifecycle review
+
+The deslop pass and independent Astra review found substantive problems beyond
+style. These changes address them:
+
+- **Lost or incorrectly published data after an owner fails.** Cancellation
+  now follows ownership of earlier buffered values, so an unpublished stream
+  cannot outlive its failed containing group. An unannounced child whose shared
+  work already executed remains eligible for publication when another owner
+  fails. Publication settles newly released children even after the final
+  resolver job. Dedicated tests cover both ordering permutations and successful
+  shared owners; the separate real-client task independently reproduced both
+  original failures through Apollo over HTTP.
+- **Repeated scans and growing-list copies.** Runnable job IDs now live in an
+  ordered set, with group membership identifying work to release. Groups refer
+  to buffered values instead of rescanning all accumulated results. Waiters
+  wake when their actual dependency changes. Collection uses prepend/reverse
+  accumulation. These changes preserve creation order for jobs and execution
+  order for published values and extension merging. Ordinary nullable values
+  no longer trigger queue scans: pruning checks both the execution tree and
+  formatted data, preserving cancellation when custom result phases null a
+  completed container or hide execution errors.
+- **Scattered feature decisions.** One directive policy handles trusted schema
+  definitions and coerced arguments. `Start` is the sole activation point, and
+  the existing pipeline utilities select continuation phases before execution.
+  Subscription rejection returns an explicit collection result without a catch
+  around resolver execution, a fake execution state, or a redundant operation
+  type field. Stream preparation belongs to the incremental planner.
+- **Source locations used as identity.** Stream overlap validation now identifies
+  occurrences by definition and selection position. Pipeline-generated fields
+  with missing or shared source locations no longer evade validation; repeated
+  references to the same named fragment still share identity.
+
+The duplicated in-process consumers were consolidated into one test assertion
+module that checks unique pending IDs, update ownership, exactly-once
+completion, terminal payloads, and duplicate object keys. It remains an
+in-process consumer, not a real-client E2E suite. A separate task based on this
+branch owns the HTTP/Apollo harness and client interoperability findings.
+
+No changed production file crosses 1,000 lines. The shared resolution phase is
+760 lines after moving incremental policy into its owning module. An independent
+scratch probe compared 512 deterministic no-error defer combinations with eager
+execution; all reconstructed results matched. This probe does not establish
+exhaustive conformance for errors or streaming, which have targeted regressions.
+
+The checked-in diagnostic `benchmarks/incremental_delivery.exs` measures initial
+and continuation work separately with five-sample medians. Run it with
+`mix run benchmarks/incremental_delivery.exs`; results depend on the machine and
+are not CI timing assertions. Cancellation after actual failures still scans
+queued work; no constant-time failure-path claim is made.
+
+Local continuation medians for 4,000 rows after review were 10.42 ms for nullable
+values, 9.43 ms for one shared group, 25.24 ms for nested groups, and 21.93 ms for
+streamed objects with deferred fields. The earlier implementation measured
+approximately 1,718 ms for nullable values and 2,961 ms for nested groups in
+the corresponding diagnostic probes.
+
+Review verification completed on 2026-09-19. Fifteen additional regressions bring
+the full suite to 1,613 tests, with the same three exclusions:
+
+| Check | Result |
+| --- | --- |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | Passed |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | Passed |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | Passed |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | Passed |
+| `mix dialyzer` | 0 errors; ignore entries unchanged |
+| Formatting, including the benchmark, and `git diff --check` | Passed |
+| `mix docs` | Passed with the existing documentation warnings |
+| Absinthe Plug compatibility suite | 87 passed with `--max-cases 1` |
+
+All four core suites used `--warnings-as-errors`. The first parallel Plug run
+hit a shared `TestPubSub.Registry` already-started error in its subscription
+fixture (86/87 passed); the serial run passed all 87. No Plug production or test
+code was changed. Dialyzer caught an overly restrictive map contract in the new
+directive helper; it now requires the directives field while allowing the
+remaining blueprint fields, with no new warning suppressions.

@@ -5,25 +5,15 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalDirectives do
 
   alias Absinthe.{Blueprint, Phase, Type}
   alias Absinthe.Blueprint.{Document, Input}
+  alias Absinthe.Incremental.Directives
 
   @spec run(Blueprint.t(), Keyword.t()) :: Phase.result_t()
   def run(input, _options \\ []) do
-    if enabled?(input.schema) do
+    if Directives.enabled?(input.schema) do
       validate(input)
     else
       {:ok, input}
     end
-  end
-
-  @doc false
-  @spec enabled?(Absinthe.Schema.t()) :: boolean
-  def enabled?(schema) do
-    Enum.any?([:defer, :stream], fn name ->
-      match?(
-        %{definition: Absinthe.Type.BuiltIns.IncrementalDirectives},
-        Absinthe.Schema.lookup_directive(schema, name)
-      )
-    end)
   end
 
   defp validate(input) do
@@ -62,7 +52,7 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalDirectives do
   end
 
   defp validate_node(%Blueprint.Directive{} = directive, {labels, errors}) do
-    if incremental?(directive) do
+    if Directives.identifier(directive) do
       case raw_argument(directive, :label) do
         %Input.Variable{} ->
           {directive,
@@ -103,7 +93,7 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalDirectives do
         errors
       else
         field.directives
-        |> Enum.filter(&(incremental?(&1) and &1.schema_node.identifier == :stream))
+        |> Enum.filter(&(Directives.identifier(&1) == :stream))
         |> Enum.reduce(errors, fn directive, errors ->
           [
             error("Directive `#{directive.name}` may only be used on list fields.", directive)
@@ -156,7 +146,7 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalDirectives do
 
   defp validate_selection(selection, errors, mode) do
     selection.directives
-    |> Enum.filter(&incremental?/1)
+    |> Enum.filter(&Directives.identifier/1)
     |> Enum.reduce(errors, fn directive, errors ->
       case mode do
         :root ->
@@ -202,18 +192,6 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalDirectives do
       end
     end)
   end
-
-  @doc false
-  @spec incremental?(Blueprint.node_t()) :: boolean
-  def incremental?(%{
-        schema_node: %{
-          identifier: identifier,
-          definition: Absinthe.Type.BuiltIns.IncrementalDirectives
-        }
-      })
-      when identifier in [:defer, :stream], do: true
-
-  def incremental?(_), do: false
 
   defp raw_argument(directive, name) do
     case Enum.find(directive.arguments, fn
