@@ -4,7 +4,7 @@
 // suppressing unexpected rejections in the main test runner.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { observe, data, paths } from "./client.mjs";
+import { observe, data } from "./client.mjs";
 import { startServer, waitFor } from "./server.mjs";
 
 const events = new EventEmitter();
@@ -27,7 +27,7 @@ try {
   await deferred.initial();
   deferred.subscription.unsubscribe();
   await stopped(deferred);
-  assert.deepEqual(paths(server, deferred.id), [["person"], ["person", "id"]]);
+  assert.deepEqual(server.paths(deferred.id), [["person"], ["person", "id"]]);
   assert.equal(deferred.raw.length, 1);
 
   const stream = observe(
@@ -40,7 +40,7 @@ try {
   assert.deepEqual(data(stream.results.at(-1)), { people: [{ name: "Ada" }] });
   stream.subscription.unsubscribe();
   await stopped(stream);
-  assert.deepEqual(paths(server, stream.id), [
+  assert.deepEqual(server.paths(stream.id), [
     ["people"],
     ["people", 0, "name"],
   ]);
@@ -60,7 +60,7 @@ try {
   );
   blocked.subscription.unsubscribe();
   await stopped(blocked);
-  assert.deepEqual(paths(server, blocked.id), [
+  assert.deepEqual(server.paths(blocked.id), [
     ["people"],
     ["people", 0, "slow"],
   ]);

@@ -304,9 +304,7 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalTest do
   end
 
   test "stream rejects scalar and object fields even when disabled" do
-    for field <- ["name", "child { name }"] do
-      selection = String.replace(field, ~r/^\w+/, "\\0 @stream(if: false)")
-
+    for selection <- ["name @stream(if: false)", "child @stream(if: false) { name }"] do
       assert ["Directive `stream` may only be used on list fields."] ==
                messages("{ node { #{selection} } }")
     end

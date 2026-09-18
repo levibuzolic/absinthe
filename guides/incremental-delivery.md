@@ -276,13 +276,10 @@ compatibility. Its compiler rejects `@stream` on scalar lists; use linked-object
 lists or connections. Relay's optional `use_customized_batch` compiler extension
 is not part of the supported draft directives and must remain disabled.
 
-The HTTP harness tests real Relay compiler/runtime 21.0.1 artifacts, generated
-from exported Absinthe SDL during the test run. Its observable network uses the
-`meros` multipart parser and forwards payloads directly to Relay. The harness's
-`incrementalSpec=relay` negotiation parameter is an application-defined test
-convention, not a standardized GraphQL HTTP protocol. Production transports must
-explicitly negotiate and select `incremental_format: :relay`; the core option
-does not configure Absinthe Plug or a client network layer automatically.
+The HTTP harness uses `incrementalSpec=relay` as an application-defined
+negotiation parameter, not a standardized GraphQL HTTP protocol. Production
+transports must explicitly negotiate and select `incremental_format: :relay`;
+the core option does not configure Absinthe Plug or a client network layer.
 
 ## Draft interpretation
 

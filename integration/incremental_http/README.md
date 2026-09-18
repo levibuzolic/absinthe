@@ -35,11 +35,8 @@ dependencies, build products and npm packages stay in this directory.
 | RxJS / JSON codec | **7.8.2** / Jason **1.4.4** |
 | HTTP server | Node's built-in `node:http`, **24.21.0** in CI |
 
-The initial plan was to verify the client revision before building the adapter,
-prove one deferred response through HTTP, then add streaming, composition,
-errors and cancellation. Inspection of the published Apollo package and its
-[pinned handler source](https://github.com/apollographql/apollo-client/blob/d4f87701204441f66b40db157b2bbd8783e46e57/src/incremental/handlers/graphql17Alpha9.ts)
-confirmed support for `pending`, string `id`, `incremental`, `subPath`, `items`,
+Apollo's [pinned handler source](https://github.com/apollographql/apollo-client/blob/d4f87701204441f66b40db157b2bbd8783e46e57/src/incremental/handlers/graphql17Alpha9.ts)
+supports `pending`, string `id`, `incremental`, `subPath`, `items`,
 `completed` (including errors), and `hasNext`. The handler advertises
 [incremental v0.2](https://specs.apollo.dev/incremental/v0.2/). The older
 `Defer20220824Handler` uses a different protocol and is not used here.

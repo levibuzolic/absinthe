@@ -145,7 +145,6 @@ defmodule Absinthe.Incremental.Delivery do
     group =
       frame.groups
       |> Enum.map(&state.groups[&1])
-      |> Enum.filter(& &1.id)
       |> Enum.max_by(&length(&1.path))
 
     sub_path = Enum.drop(State.path(frame.path), length(group.path))
@@ -348,10 +347,10 @@ defmodule Absinthe.Incremental.Delivery do
     end)
   end
 
-  defp may_invalidate_work?(%{values: values}, data) when is_list(data),
-    do:
-      Enum.zip(values, data)
-      |> Enum.any?(fn {node, value} -> may_invalidate_work?(node, value) end)
+  defp may_invalidate_work?(%{values: values}, data) when is_list(data) do
+    Enum.zip(values, data)
+    |> Enum.any?(fn {node, value} -> may_invalidate_work?(node, value) end)
+  end
 
   defp may_invalidate_work?(_, _), do: false
 

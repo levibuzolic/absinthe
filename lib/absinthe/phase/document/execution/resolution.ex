@@ -91,8 +91,6 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     maybe_substitute_pending(exec)
   end
 
-  # First run: expand the operation into the result tree. Suspended fields
-  # leave placeholders in the tree and are collected into the pending pool.
   defp do_perform_resolution(%{result: nil, incremental: %{frame: frame}} = exec, _operation, res)
        when not is_nil(frame) do
     {result, res} = resolve_frame(frame, res)
@@ -100,6 +98,8 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     %{exec | result: result, pending: Enum.reverse(res.pending)}
   end
 
+  # First run: expand the operation into the result tree. Suspended fields
+  # leave placeholders in the tree and are collected into the pending pool.
   defp do_perform_resolution(%{result: %{fields: nil}} = exec, operation, res) do
     {result, res} =
       exec.result

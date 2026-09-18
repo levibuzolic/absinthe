@@ -5,8 +5,6 @@ import http from "node:http";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-export const multipart =
-  'multipart/mixed; boundary="absinthe-e2e"; incrementalSpec=v0.2';
 const boundary = "\r\n--absinthe-e2e";
 
 // Deadlines detect hangs. They never release work or establish event ordering.
@@ -150,31 +148,30 @@ export async function startServer({ reference = false } = {}) {
     const response = session.response;
     const isMultipart = session.payloads[0].hasNext === true;
     if (session.payloads.length === 1) {
+      const format = session.relay ? "relay" : "v0.2";
       response.writeHead(200, {
         "content-type": isMultipart
-          ? session.relay
-            ? 'multipart/mixed; boundary="absinthe-e2e"; incrementalSpec=relay'
-            : multipart
+          ? `multipart/mixed; boundary="absinthe-e2e"; incrementalSpec=${format}`
           : session.jsonType,
         "cache-control": "no-store",
       });
       if (isMultipart) response.write(boundary);
     }
-    if (isMultipart) {
-      // End each part with the NEXT boundary immediately. Waiting for another
-      // payload before sending this delimiter would buffer the initial result
-      // inside real multipart parsers and deadlock the coordinated tests.
-      const part = `\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(payload)}${boundary}`;
-      if (session.fragmented) {
-        // Separate writes deliberately cut headers, JSON and UTF-8 codepoints.
-        // TCP may coalesce them; tests do not assume packet boundaries.
-        const bytes = Buffer.from(part);
-        for (let i = 0; i < bytes.length; i += 7)
-          response.write(bytes.subarray(i, i + 7));
-      } else response.write(part);
-      if (session.truncate) response.end();
-      else if (payload.hasNext === false) response.end("--\r\n");
-    } else response.end(JSON.stringify(payload));
+    if (!isMultipart) return response.end(JSON.stringify(payload));
+
+    // End each part with the NEXT boundary immediately. Waiting for another
+    // payload before sending this delimiter would buffer the initial result
+    // inside real multipart parsers and deadlock the coordinated tests.
+    const part = `\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(payload)}${boundary}`;
+    if (session.fragmented) {
+      // Separate writes deliberately cut headers, JSON and UTF-8 codepoints.
+      // TCP may coalesce them; tests do not assume packet boundaries.
+      const bytes = Buffer.from(part);
+      for (let i = 0; i < bytes.length; i += 7)
+        response.write(bytes.subarray(i, i + 7));
+    } else response.write(part);
+    if (session.truncate) response.end();
+    else if (payload.hasNext === false) response.end("--\r\n");
   }
 
   const server = http.createServer(async (request, response) => {
@@ -257,7 +254,11 @@ export async function startServer({ reference = false } = {}) {
   return {
     url: `http://127.0.0.1:${server.address().port}/graphql`,
     sessions,
-    events,
+    paths: (id) =>
+      sessions
+        .get(id)
+        .events.filter((event) => event.event === "resolved")
+        .map((event) => event.path),
     next: (id) => send("next", id),
     releaseResolver: (id) => send("release_resolver", id),
     wait: (id, predicate, description) =>

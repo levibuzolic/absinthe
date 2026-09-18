@@ -69,10 +69,10 @@ a draft feature. This work must therefore:
 5. **List completion.** Resolve a list field once, complete only its initial
    prefix, and keep remaining raw items for subsequent demand. Stream the
    outermost list only. A tail error must not invalidate the initial prefix.
-6. **Current wire format.** Use string `id`s, `pending` notices with response
+6. **Default wire format.** Use string `id`s, `pending` notices with response
    paths and optional labels, `incremental` object/list records, optional
-   `subPath`, `completed` notices, and a terminal `hasNext: false`. Never use the
-   obsolete path/label-only patch format from older proposals.
+   `subPath`, `completed` notices, and a terminal `hasNext: false`. Relay
+   compatibility uses an explicitly selected format, described below.
 7. **Errors and lifecycle.** Nullable errors accompany their delivered data.
    Non-null failures reaching an already-delivered incremental boundary produce
    failed completion notices, discard unusable data, and cancel unreachable
@@ -94,7 +94,7 @@ a draft feature. This work must therefore:
     nodes, so custom external naming works without capturing unrelated custom
     directives that happen to have the same names.
 
-## Implementation sequence and ownership
+## Implementation sequence
 
 ### 1. Research and baseline
 
@@ -103,7 +103,7 @@ a draft feature. This work must therefore:
   plugin scheduling, directive expansion, and public execution entry points.
 - [x] Establish the baseline: 1,503 tests pass, 3 excluded on Elixir 1.20.3 /
   OTP 29. The dependency Dataloader emits an existing unused-require warning.
-- [x] Finish independent Astra reviews of the old implementation and draft;
+- [x] Finish independent reviews of the old implementation and draft;
   turn their concrete findings into tests and documented decisions.
 
 ### 2. Schema and validation
@@ -158,8 +158,7 @@ a draft feature. This work must therefore:
   root values, adapters, operation selection, and complexity limits.
 - [x] Delayed execution and demand bounds established by resolver messages or
   counters, without timing-sensitive sleeps.
-- [x] Independent Astra adversarial review, with Luna assigned only simple
-  fixtures, examples, and narrowly specified regression cases.
+- [x] Independent adversarial review of execution, validation and client behavior.
 
 ### 6. Documentation and final checks
 
@@ -171,7 +170,7 @@ a draft feature. This work must therefore:
 - [x] Review the entire diff for unnecessary abstractions, duplicate logic,
   unsupported claims, debug files, and accidental unrelated changes.
 - [x] Update this plan with completed checks, known draft ambiguities, and exact
-  scope. Mark the goal complete only when the stated support is implemented.
+  scope.
 
 ## Draft interpretation
 
@@ -192,171 +191,43 @@ owner fails, withholding private data until a group succeeds, and cancelling
 a repeated directive node with its owning parent. Those cases have dedicated
 regressions in `incremental_conformance_test.exs`.
 
+## Lifecycle and scheduling invariants
+
+Regression tests cover unpublished streams after parent failure, completed
+shared children surviving another owner's failure, and child publication after
+the last resolver job. Pruning checks both the execution tree and formatted data
+so custom result phases can null containers or hide errors without leaving
+unreachable work queued.
+
+Runnable jobs use an ordered set; groups track their buffered values and waiters
+wake when their dependencies change. Ordinary null values do not trigger scans
+of all pending work. Cancellation after a failure still scans queued work.
+Stream overlap validation identifies occurrences by definition and selection
+position, including fields with missing or shared source locations.
+
+The diagnostic `benchmarks/incremental_delivery.exs` measures initial and
+continuation work separately with five-sample medians. Run it with
+`mix run benchmarks/incremental_delivery.exs`; results depend on the machine
+and are not CI timing assertions.
+
+## Relay compatibility
+
+Relay compiler/runtime 21.0.1 requires `incremental_format: :relay`. The
+formatter uses execution group metadata to include deduplicated ancestors that
+are absent from draft wire notices, and retains data for complete deferred
+snapshots. This costs memory and can repeat fields on the wire. Failed
+boundaries terminate the Relay operation; nullable streamed items require a
+final root replay. See the [compatibility guide](guides/incremental-delivery.md#relay-compatibility).
+
+The [HTTP harness](integration/incremental_http/README.md) generates actual Relay
+artifacts from exported Absinthe SDL and checks its normalized store, fragment
+readers and paginated connections. SDL export now preserves typed macro defaults
+without requiring a started schema provider. Generated artifacts stay out of Git.
+
 ## Verification record
 
-Baseline: `mix test` — 1,503 passed, 3 excluded (2026-09-18).
-
-The implementation adds schema opt-in, `run_incremental/3` and
-`run_incremental!/3`, demand-driven defer and stream completion, validation,
-spec-shaped payloads, and the executable incremental delivery guide. Ordinary
-execution keeps its existing return contract. No dependencies or transport
-packages were added.
-
-Independent Astra reviews covered the rejected PR, the pinned proposal,
-adversarial execution cases, and maintainability. Luna handled bounded
-directive definitions, middleware fixtures, coercion cases, and compatibility
-checks. Review findings about shared-group cancellation, premature publication
-of private fields, and adapted directive names were fixed and covered by tests.
-
-The initial implementation added 95 regression tests. Checks performed for
-commit `4a96b2bb` on 2026-09-18:
-
-| Check | Result |
-| --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,598 passed, 3 excluded |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,598 passed, 3 excluded |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,598 tests, 0 failures, 3 excluded |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,598 tests, 0 failures, 3 excluded |
-| `mix dialyzer` | 0 errors; existing ignore entries unchanged |
-| `mix format --check-formatted` and `git diff --check` | Passed |
-| `mix docs` and executed guide example | Passed |
-| Absinthe Plug compatibility suite with local Absinthe dependency | 87 passed |
-
-Full suites used `mix test --warnings-as-errors`. Absinthe Plug was tested at
-`a20146ead4bdd885f3c22115fbe37b86b4330217` in a separate temporary checkout;
-its existing unused `Logger` require warning remains. Documentation generation
-reports existing MakeupGraphql deprecations and hidden blueprint references.
-These checks do not claim that every operating system or CI matrix combination
-has been run locally.
-
-The delivery queue was also profiled on 100, 200, and 400 streamed objects with
-nested deferred fields. Keeping active work counts and completion candidates
-removed repeated scans over all completed groups; measured continuation times
-in the local probe were approximately 0.25, 0.45, and 0.83 milliseconds. This is
-a diagnostic scaling check, not a portable performance guarantee.
-
-The supported boundary is the core execution API through consumption of its
-payload enumerable. HTTP, SSE, and WebSocket adapters need their own protocol
-negotiation and framing. The stream resolver supplies an ordinary list; source
-pagination is not implicit. Consumers enumerate once in the request process;
-discarding or halting the enumerable prevents future incremental execution.
-The pinned proposal remains a draft, rather than a ratified GraphQL feature.
-
-## Follow-up maintainability and lifecycle review
-
-The deslop pass and independent Astra review found substantive problems beyond
-style. These changes address them:
-
-- **Lost or incorrectly published data after an owner fails.** Cancellation
-  now follows ownership of earlier buffered values, so an unpublished stream
-  cannot outlive its failed containing group. An unannounced child whose shared
-  work already executed remains eligible for publication when another owner
-  fails. Publication settles newly released children even after the final
-  resolver job. Dedicated tests cover both ordering permutations and successful
-  shared owners; the separate real-client task independently reproduced both
-  original failures through Apollo over HTTP.
-- **Repeated scans and growing-list copies.** Runnable job IDs now live in an
-  ordered set, with group membership identifying work to release. Groups refer
-  to buffered values instead of rescanning all accumulated results. Waiters
-  wake when their actual dependency changes. Collection uses prepend/reverse
-  accumulation. These changes preserve creation order for jobs and execution
-  order for published values and extension merging. Ordinary nullable values
-  no longer trigger queue scans: pruning checks both the execution tree and
-  formatted data, preserving cancellation when custom result phases null a
-  completed container or hide execution errors.
-- **Scattered feature decisions.** One directive policy handles trusted schema
-  definitions and coerced arguments. `Start` is the sole activation point, and
-  the existing pipeline utilities select continuation phases before execution.
-  Subscription rejection returns an explicit collection result without a catch
-  around resolver execution, a fake execution state, or a redundant operation
-  type field. Stream preparation belongs to the incremental planner.
-- **Source locations used as identity.** Stream overlap validation now identifies
-  occurrences by definition and selection position. Pipeline-generated fields
-  with missing or shared source locations no longer evade validation; repeated
-  references to the same named fragment still share identity.
-
-The duplicated in-process consumers were consolidated into one test assertion
-module that checks unique pending IDs, update ownership, exactly-once
-completion, terminal payloads, and duplicate object keys. It remains an
-in-process consumer, not a real-client E2E suite. A separate task based on this
-branch owns the HTTP/Apollo harness and client interoperability findings.
-
-No changed production file crosses 1,000 lines. The shared resolution phase is
-760 lines after moving incremental policy into its owning module. An independent
-scratch probe compared 512 deterministic no-error defer combinations with eager
-execution; all reconstructed results matched. This probe does not establish
-exhaustive conformance for errors or streaming, which have targeted regressions.
-
-The checked-in diagnostic `benchmarks/incremental_delivery.exs` measures initial
-and continuation work separately with five-sample medians. Run it with
-`mix run benchmarks/incremental_delivery.exs`; results depend on the machine and
-are not CI timing assertions. Cancellation after actual failures still scans
-queued work; no constant-time failure-path claim is made.
-
-Local continuation medians for 4,000 rows after review were 10.42 ms for nullable
-values, 9.43 ms for one shared group, 25.24 ms for nested groups, and 21.93 ms for
-streamed objects with deferred fields. The earlier implementation measured
-approximately 1,718 ms for nullable values and 2,961 ms for nested groups in
-the corresponding diagnostic probes.
-
-Review verification completed on 2026-09-19. Fifteen additional regressions bring
-the full suite to 1,613 tests, with the same three exclusions:
-
-| Check | Result |
-| --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | Passed |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | Passed |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | Passed |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | Passed |
-| `mix dialyzer` | 0 errors; ignore entries unchanged |
-| Formatting, including the benchmark, and `git diff --check` | Passed |
-| `mix docs` | Passed with the existing documentation warnings |
-| Absinthe Plug compatibility suite | 87 passed with `--max-cases 1` |
-
-All four core suites used `--warnings-as-errors`. The first parallel Plug run
-hit a shared `TestPubSub.Registry` already-started error in its subscription
-fixture (86/87 passed); the serial run passed all 87. No Plug production or test
-code was changed. Dialyzer caught an overly restrictive map contract in the new
-directive helper; it now requires the directives field while allowing the
-remaining blueprint fields, with no new warning suppressions.
-
-## Relay compatibility follow-up
-
-Relay compiler/runtime 21.0.1 does not accept the default proposal's ID-based
-incremental envelopes. A real HTTP test first reproduced its rejection after
-the initial response. The follow-up adds an explicit `incremental_format:
-:relay` option while retaining the default draft protocol.
-
-Implementation proceeded in tested slices: named deferred fragments; indexed
-stream items; deduplicated ancestor fragments and abstract type information;
-nested streams and defers; relative error paths and terminal boundary errors;
-then nullable-item replay and cursor pagination. The formatter reads execution
-group metadata because wire payloads alone omit ancestors with no independent
-work. It retains an indexed snapshot and emits complete deferred subtrees so
-Relay can normalize shared IDs and type discriminators without rerunning fields.
-
-The harness exports SDL from the real schema and runs the pinned Relay compiler
-before testing its artifacts. This exposed an existing SDL renderer defect:
-macro argument defaults were omitted. Export now uses the existing typed
-default-value renderer, including custom scalars, enums, input objects and
-nested nulls, without requiring a started persistent-term schema provider.
-Generated schema and compiler artifacts are not committed.
-
-The 22 Relay HTTP tests exercise Relay's normalized store and fragment readers,
-including `@stream_connection`, deferred page info, shared-store pagination,
-abstract types, nested delivery, errors and cancellation. A paginated null edge
-is replayed without duplicate nodes or cursor mismatch warnings, and the next
-page merges correctly. The suite explicitly characterizes rejection of modern
-draft envelopes and the compiler's scalar-list streaming restriction.
-
-Relay compatibility has documented costs and limits: deferred snapshots repeat
-previously delivered data, nullable streamed items require a final root replay,
-and failed boundaries terminate the operation because Relay lacks the draft's
-isolated failed-group notice. Expected development warnings from final replay
-are asserted. The HTTP adapter uses an application-defined negotiation token;
-production transport support remains a separate integration responsibility.
-
-Verification completed on 2026-09-19:
+Baseline: 1,503 passed, 3 excluded on 2026-09-18. Latest verification on
+2026-09-19 uses `mix test --warnings-as-errors` for each core suite:
 
 | Check | Result |
 | --- | --- |
@@ -367,10 +238,13 @@ Verification completed on 2026-09-19:
 | Root and harness formatting, `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
 
-The existing scaling probe was also run with the Relay format on 500–4,000
-rows. At 4,000 rows, median continuation times were 10.73 ms for nullable values,
-12.66 ms for one shared group, 29.59 ms for nested groups, and 27.73 ms for
-streamed objects with deferred fields. These are local diagnostic measurements,
-not timing assertions or portable performance guarantees. The HTTP count
-includes the documented Apollo defect characterizations and Relay rejection
-tests; it does not imply that those unsupported cases now work.
+The HTTP total includes explicit characterizations of the documented Apollo
+client defects and Relay protocol/compiler rejections; those cases remain
+unsupported. The harness README records their evidence and pinned versions.
+Documentation generation retains existing MakeupGraphql deprecations and
+hidden-type reference warnings.
+
+Absinthe Plug at `a20146ead4bdd885f3c22115fbe37b86b4330217` passed all 87 tests
+against core commit `d66f7e35`, using `--max-cases 1` because its parallel
+subscription fixture hit an already-started registry. This checked ordinary
+execution compatibility, not production incremental HTTP support.

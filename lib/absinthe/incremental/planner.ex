@@ -122,7 +122,7 @@ defmodule Absinthe.Incremental.Planner do
          acc
        ) do
     if applies?(fragment.type_condition, type, res.schema) do
-      {usage, acc} = defer(fragment, usage, path, res, acc)
+      {usage, acc} = defer(Directives.active(fragment, :defer), usage, path, res, acc)
       collect(fragment.selections, usage, type, path, res, acc)
     else
       acc
@@ -145,7 +145,7 @@ defmodule Absinthe.Incremental.Planner do
     if applies?(fragment.type_condition, type, res.schema) and
          not MapSet.member?(visited, nil) and not MapSet.member?(visited, token) do
       acc = %{acc | visited: Map.put(acc.visited, name, MapSet.put(visited, token))}
-      {usage, acc} = defer(spread, usage, path, res, acc)
+      {usage, acc} = defer(directive, usage, path, res, acc)
       collect(fragment.selections, usage, type, path, res, acc)
     else
       acc
@@ -155,27 +155,23 @@ defmodule Absinthe.Incremental.Planner do
   defp usage_token(nil, _), do: nil
   defp usage_token(usage, state), do: state.groups[usage].directive
 
-  defp defer(fragment, parent, path, res, acc) do
-    case Directives.active(fragment, :defer) do
-      nil ->
-        {parent, acc}
+  defp defer(nil, parent, _path, _res, acc), do: {parent, acc}
 
-      {directive, args} ->
-        if res.incremental_subscription do
-          throw({:incremental_subscription, directive})
-        end
-
-        {usage, state} =
-          State.group(acc.state, %{
-            kind: :defer,
-            parent: parent,
-            path: State.path(path),
-            label: args[:label],
-            directive: directive
-          })
-
-        {usage, %{acc | state: state}}
+  defp defer({directive, args}, parent, path, res, acc) do
+    if res.incremental_subscription do
+      throw({:incremental_subscription, directive})
     end
+
+    {usage, state} =
+      State.group(acc.state, %{
+        kind: :defer,
+        parent: parent,
+        path: State.path(path),
+        label: args[:label],
+        directive: directive
+      })
+
+    {usage, %{acc | state: state}}
   end
 
   defp filtered_usages(details, state) do

@@ -66,11 +66,7 @@ test("raw modern incremental frames are not the Relay protocol", async (t) => {
   await assert.rejects(client.finish(), /No data returned/);
 });
 
-const paths = (id) =>
-  server.sessions
-    .get(id)
-    .events.filter((e) => e.event === "resolved")
-    .map((e) => e.path);
+const paths = (id) => server.paths(id);
 
 test("Relay streams aliased objects progressively using variable initialCount", async (t) => {
   const client = observeRelay(server, t, StreamQuery, {

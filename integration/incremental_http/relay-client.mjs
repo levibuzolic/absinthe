@@ -29,7 +29,7 @@ export function observeRelay(
   const id = `relay-${++serial}`;
   const events = new EventEmitter();
   const raw = [];
-  const snapshots = [];
+  let initialSnapshot;
   let error;
   let completed = false;
   const operation = createOperationDescriptor(query, variables);
@@ -80,7 +80,7 @@ export function observeRelay(
   });
   const subscription = environment.execute({ operation }).subscribe({
     next() {
-      snapshots.push(environment.lookup(operation.fragment));
+      initialSnapshot ??= environment.lookup(operation.fragment);
       events.emit("change");
     },
     error(value) {
@@ -98,17 +98,13 @@ export function observeRelay(
   return {
     id,
     environment,
-    operation,
     raw,
-    snapshots,
     subscription,
-    get error() {
-      return error;
-    },
     read: () => environment.lookup(operation.fragment),
     fragment: (fragment, reference) =>
       environment.lookup(getSelector(fragment, reference)),
-    initial: () => wait(() => snapshots[0] || error, "initial Relay snapshot"),
+    initial: () =>
+      wait(() => initialSnapshot || error, "initial Relay snapshot"),
     async next() {
       const count = raw.length;
       server.next(id);

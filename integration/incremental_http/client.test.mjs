@@ -3,11 +3,7 @@ import { after, before, test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { startServer } from "./server.mjs";
-import {
-  data,
-  observe as observeClient,
-  paths as resolvedPaths,
-} from "./client.mjs";
+import { data, observe as observeClient } from "./client.mjs";
 
 let server;
 before(async () => {
@@ -17,7 +13,7 @@ after(async () => {
   if (server) await server.close();
 });
 const observe = (...args) => observeClient(server, ...args);
-const paths = (id) => resolvedPaths(server, id);
+const paths = (id) => server.paths(id);
 
 test("Apollo receives aliased, labelled defer before delayed resolution", async (t) => {
   const operation = observe(

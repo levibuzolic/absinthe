@@ -90,8 +90,8 @@ defmodule Absinthe.Incremental.State do
     }
   end
 
-  # Cancellation removes only affected owner memberships. Ready IDs preserve
-  # first-ready FIFO order without repeatedly walking blocked jobs.
+  # Cancellation removes only affected owner memberships. Ready job IDs preserve
+  # enqueue order without repeatedly walking blocked jobs.
   def restrict_jobs(state, restrict) do
     Enum.reduce(state.jobs, state, fn {id, job}, state ->
       case restrict.(job) do

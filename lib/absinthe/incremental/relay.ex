@@ -39,6 +39,7 @@ defmodule Absinthe.Incremental.Relay do
   defp next(state) do
     {payload, blueprint} = Delivery.next(state.blueprint, state.pipeline)
     core = blueprint.execution.incremental
+    completed = Map.get(payload, :completed, [])
     state = %{state | blueprint: blueprint}
 
     {stream_packets, state} =
@@ -47,7 +48,7 @@ defmodule Absinthe.Incremental.Relay do
       end)
 
     {packets, state} =
-      Enum.reduce(Map.get(payload, :completed, []), {[], state}, fn
+      Enum.reduce(completed, {[], state}, fn
         %{errors: [_ | _]}, acc ->
           acc
 
@@ -60,17 +61,22 @@ defmodule Absinthe.Incremental.Relay do
           end
       end)
 
-    packets = Enum.reverse(packets) ++ Enum.reverse(stream_packets)
+    packets = Enum.reverse(packets, Enum.reverse(stream_packets))
 
     failures =
-      payload
-      |> Map.get(:completed, [])
+      completed
       |> Enum.flat_map(&Map.get(&1, :errors, []))
       |> Enum.uniq()
 
     done = failures != [] or not payload.hasNext
-    packets = if done, do: packets ++ [terminal(state, failures)], else: packets
-    packets = if packets == [], do: [continuing(%{data: nil})], else: packets
+
+    packets =
+      cond do
+        done -> packets ++ [terminal(state, failures)]
+        packets == [] -> [continuing(%{data: nil})]
+        true -> packets
+      end
+
     extensions = Map.get(payload, :extensions, %{})
 
     packets =

@@ -32,6 +32,7 @@ export function observe(
   } = {},
 ) {
   const id = `request-${++serial}`;
+  const document = gql(query);
   const events = new EventEmitter();
   const raw = [];
   const results = [];
@@ -73,7 +74,7 @@ export function observe(
   });
   const subscription = client
     .watchQuery({
-      query: gql(query),
+      query: document,
       variables,
       fetchPolicy,
       errorPolicy: "all",
@@ -110,7 +111,7 @@ export function observe(
     settled: () =>
       wait(() => results.findLast((r) => !r.loading), "settled client result"),
     cached: () => ({
-      data: client.readQuery({ query: gql(query), variables }),
+      data: client.readQuery({ query: document, variables }),
     }),
     initial: () =>
       wait(
@@ -168,9 +169,3 @@ function assertLifecycle(payloads) {
   }
   assert.equal(pending.size, 0, "No unresolved pending IDs at completion");
 }
-
-export const paths = (server, id) =>
-  server.sessions
-    .get(id)
-    .events.filter((e) => e.event === "resolved")
-    .map((e) => e.path);
