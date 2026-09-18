@@ -11,6 +11,7 @@ defmodule Absinthe.Incremental.State do
             next_frame: 0,
             frame: nil,
             waiting: %{},
+            dependents: %{},
             completion_candidates: MapSet.new(),
             buffered: %{}
 
@@ -36,13 +37,26 @@ defmodule Absinthe.Incremental.State do
         attributes
       )
 
+    dependents =
+      state.dependents
+      |> add_dependent({:group, group.parent}, ref)
+      |> add_dependent({:frame, group.owner}, ref)
+
     {ref,
      %{
        state
        | groups: Map.put(state.groups, ref, group),
-         unannounced: [ref | state.unannounced]
+         unannounced: [ref | state.unannounced],
+         dependents: dependents
      }}
   end
+
+  # Static ownership includes no-work groups. Waiting, separately, records only
+  # the current publication blocker and is consumed when that blocker clears.
+  defp add_dependent(dependents, {_, nil}, _ref), do: dependents
+
+  defp add_dependent(dependents, dependency, ref),
+    do: Map.update(dependents, dependency, [ref], &[ref | &1])
 
   def enqueue(state, job) do
     id = state.next_job
@@ -92,8 +106,15 @@ defmodule Absinthe.Incremental.State do
 
   # Cancellation removes only affected owner memberships. Ready job IDs preserve
   # enqueue order without repeatedly walking blocked jobs.
-  def restrict_jobs(state, restrict) do
-    Enum.reduce(state.jobs, state, fn {id, job}, state ->
+  def restrict_jobs(state, restrict), do: restrict_jobs(state, state.jobs, restrict)
+
+  def restrict_groups(state, groups, restrict) do
+    jobs = groups |> Enum.flat_map(&MapSet.to_list(state.groups[&1].jobs)) |> Enum.uniq()
+    restrict_jobs(state, Map.take(state.jobs, jobs), restrict)
+  end
+
+  defp restrict_jobs(state, jobs, restrict) do
+    Enum.reduce(jobs, state, fn {id, job}, state ->
       case restrict.(job) do
         nil ->
           state = change_memberships(state, job.groups, id, :remove)

@@ -9,16 +9,15 @@ defmodule Absinthe.Incremental.Relay do
       blueprint: blueprint,
       pipeline: pipeline,
       data: snapshot(initial.data),
-      errors: Enum.reverse(Map.get(initial, :errors, [])),
+      errors: index_errors({0, %{}}, Map.get(initial, :errors, [])),
       sent: MapSet.new(),
-      queue: [],
       replay: false,
       done: false
     }
 
     %Incremental{
       initial_result: initial |> Map.take([:data, :errors, :extensions]) |> continuing(),
-      subsequent_results: Stream.unfold(state, &next/1)
+      subsequent_results: state |> Stream.unfold(&next/1) |> Stream.flat_map(& &1)
     }
   end
 
@@ -30,9 +29,6 @@ defmodule Absinthe.Incremental.Relay do
     |> Map.put(:hasNext, not final?)
     |> Map.update(:extensions, %{is_final: final?}, &Map.put(&1, :is_final, final?))
   end
-
-  defp next(%{queue: [payload | rest]} = state),
-    do: {payload, %{state | queue: rest}}
 
   defp next(%{done: true}), do: nil
 
@@ -84,19 +80,20 @@ defmodule Absinthe.Incremental.Relay do
         Map.update!(packet, :extensions, &Map.merge(extensions, &1))
       end)
 
-    next(%{state | queue: packets, done: done})
+    {packets, %{state | done: done}}
   end
 
   defp apply_entry(%{data: fields} = entry, group, {packets, state}) do
     path = group.path ++ Map.get(entry, :subPath, [])
     data = update(state.data, path, &Map.merge(&1, snapshot(fields)))
-    errors = Enum.reverse(Map.get(entry, :errors, []), state.errors)
+    errors = index_errors(state.errors, Map.get(entry, :errors, []))
     {packets, %{state | data: data, errors: errors}}
   end
 
   defp apply_entry(%{items: items} = entry, group, {packets, state}) do
     {:list, values} = fetch(state.data, group.path)
-    errors = Enum.reverse(Map.get(entry, :errors, []))
+    errors = Map.get(entry, :errors, [])
+    item_errors = index_errors({0, %{}}, errors)
 
     {values, packets, replay} =
       Enum.reduce(items, {values, packets, state.replay}, fn item, {values, packets, replay} ->
@@ -111,7 +108,7 @@ defmodule Absinthe.Incremental.Relay do
         else
           packet =
             %{data: item, label: group.label, path: path}
-            |> with_errors(relative_errors(errors, path))
+            |> with_errors(relative_errors(item_errors, path))
             |> continuing()
 
           {values, [packet | packets], replay}
@@ -119,12 +116,12 @@ defmodule Absinthe.Incremental.Relay do
       end)
 
     data = update(state.data, group.path, fn _ -> {:list, values} end)
-    {packets, %{state | data: data, errors: errors ++ state.errors, replay: replay}}
+    {packets, %{state | data: data, errors: index_errors(state.errors, errors), replay: replay}}
   end
 
   defp terminal(%{replay: true} = state, []) do
     %{data: restore(state.data)}
-    |> with_errors(Enum.reverse(state.errors))
+    |> with_errors(relative_errors(state.errors, []))
     |> final()
   end
 
@@ -148,18 +145,39 @@ defmodule Absinthe.Incremental.Relay do
     end
   end
 
-  defp relative_errors(errors, path) do
-    errors
-    |> Enum.reverse()
-    |> Enum.flat_map(fn
-      %{path: error_path} = error ->
-        if List.starts_with?(error_path, path),
-          do: [%{error | path: Enum.drop(error_path, length(path))}],
-          else: []
+  # Index each response-path prefix so a deferred fragment reads only its own
+  # errors. Sequence numbers preserve order when merging errors without paths.
+  defp index_errors(index, errors) do
+    Enum.reduce(errors, index, fn error, {sequence, by_path} ->
+      paths =
+        case error do
+          %{path: path} -> Enum.scan(path, [], fn key, prefix -> prefix ++ [key] end)
+          _ -> [nil]
+        end
 
-      error ->
-        [error]
+      by_path =
+        Enum.reduce([[] | paths], by_path, fn path, by_path ->
+          Map.update(by_path, path, [{sequence, error}], &[{sequence, error} | &1])
+        end)
+
+      {sequence + 1, by_path}
     end)
+  end
+
+  defp relative_errors({_, by_path}, path) do
+    errors = Map.get(by_path, path, [])
+
+    errors =
+      if path == [],
+        do: errors,
+        else: :lists.rkeymerge(1, errors, Map.get(by_path, nil, []))
+
+    for {_, error} <- Enum.reverse(errors) do
+      case error do
+        %{path: error_path} -> %{error | path: Enum.drop(error_path, length(path))}
+        _ -> error
+      end
+    end
   end
 
   defp with_errors(packet, []), do: packet

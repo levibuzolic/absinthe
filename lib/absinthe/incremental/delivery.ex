@@ -2,6 +2,7 @@ defmodule Absinthe.Incremental.Delivery do
   @moduledoc false
 
   alias Absinthe.Incremental.State
+  alias Absinthe.Type
 
   def next(blueprint, pipeline) do
     if State.pending?(blueprint.execution.incremental), do: execute_next(blueprint, pipeline)
@@ -228,22 +229,17 @@ defmodule Absinthe.Incremental.Delivery do
     {failed, unpublished} = failed_descendants(state, frame)
 
     state =
-      State.restrict_jobs(state, fn job ->
+      State.restrict_groups(state, failed, fn job ->
         groups = MapSet.difference(job.groups, failed)
 
-        cond do
-          MapSet.size(groups) == 0 ->
-            nil
-
-          groups == job.groups ->
+        if MapSet.size(groups) == 0 do
+          nil
+        else
+          %{
             job
-
-          true ->
-            %{
-              job
-              | groups: groups,
-                fields: Absinthe.Incremental.Planner.retain_fields(job.fields, failed)
-            }
+            | groups: groups,
+              fields: Absinthe.Incremental.Planner.retain_fields(job.fields, failed)
+          }
         end
       end)
 
@@ -281,38 +277,38 @@ defmodule Absinthe.Incremental.Delivery do
   end
 
   defp failed_descendants(state, frame) do
-    # A group's parents and the owners of its source value always precede it.
-    # This lets one pass cancel both nested defers and streams belonging to
-    # earlier private values that were buffered before this frame failed.
-    Enum.reduce(
-      Enum.sort(Map.keys(state.groups)),
-      {frame.groups, MapSet.new([frame.ref])},
-      fn ref, {failed, unpublished} ->
-        group = state.groups[ref]
+    dependencies = [{:frame, frame.ref} | Enum.map(frame.groups, &{:group, &1})]
+    visited = visit_failed(dependencies, state, %{})
+    failed = for {{:group, ref}, _} <- visited, do: ref
+    unpublished = for {{:frame, ref}, _} <- visited, do: ref
+    {MapSet.new(failed), MapSet.new(unpublished)}
+  end
 
-        if MapSet.member?(failed, ref) or MapSet.member?(failed, group.parent) or
-             MapSet.member?(unpublished, group.owner) do
-          failed = MapSet.put(failed, ref)
+  defp visit_failed([], _state, visited), do: visited
 
-          unpublished =
-            Enum.reduce(group.buffered, unpublished, fn value_ref, unpublished ->
-              case Map.fetch(state.buffered, value_ref) do
-                {:ok, {value_frame, _}} ->
-                  if MapSet.subset?(value_frame.groups, failed),
-                    do: MapSet.put(unpublished, value_ref),
-                    else: unpublished
+  defp visit_failed([dependency | rest], state, visited) do
+    if Map.has_key?(visited, dependency) do
+      visit_failed(rest, state, visited)
+    else
+      visited = Map.put(visited, dependency, true)
+      children = Enum.map(Map.get(state.dependents, dependency, []), &{:group, &1})
 
-                :error ->
-                  unpublished
-              end
-            end)
+      # A shared buffer is reconsidered for each failed owner; only its last
+      # surviving owner can make the frame and its children unreachable.
+      frames =
+        case dependency do
+          {:group, ref} ->
+            for value_ref <- state.groups[ref].buffered,
+                {frame, _result} <- List.wrap(Map.get(state.buffered, value_ref)),
+                Enum.all?(frame.groups, &Map.has_key?(visited, {:group, &1})),
+                do: {:frame, value_ref}
 
-          {failed, unpublished}
-        else
-          {failed, unpublished}
+          {:frame, _} ->
+            []
         end
-      end
-    )
+
+      visit_failed(frames ++ children ++ rest, state, visited)
+    end
   end
 
   # Work is meaningful only while the object/list containing it exists in the
@@ -332,7 +328,16 @@ defmodule Absinthe.Incremental.Delivery do
 
   # An ordinary null leaf never scheduled descendants. Error propagation or a
   # result phase nulling a completed container can invalidate queued work.
-  defp may_invalidate_work?(%{errors: [_ | _]}, _data), do: true
+  defp may_invalidate_work?(%{value: nil, errors: [_ | _], emitter: emitter}, _data) do
+    type =
+      case emitter.schema_node do
+        %Type.Field{type: type} -> Type.unwrap_non_null(type)
+        type -> type
+      end
+
+    match?(%Type.List{}, type) or Type.composite_type?(type)
+  end
+
   defp may_invalidate_work?(%{fields: fields}, nil) when is_list(fields), do: true
   defp may_invalidate_work?(%{values: _}, nil), do: true
 

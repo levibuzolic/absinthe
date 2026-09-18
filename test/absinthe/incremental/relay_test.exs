@@ -46,6 +46,21 @@ defmodule Absinthe.Incremental.RelayTest do
     end
   end
 
+  defmodule PathlessErrors do
+    use Absinthe.Phase
+
+    def run(blueprint, options) do
+      {:ok, blueprint} = Absinthe.Phase.Document.Result.run(blueprint, options)
+
+      result =
+        Map.update(blueprint.result, :errors, [], fn errors ->
+          [%{message: "before"} | errors] ++ [%{message: "after"}]
+        end)
+
+      {:ok, %{blueprint | result: result}}
+    end
+  end
+
   setup_all do
     if Schema.__absinthe_schema_provider__() == Absinthe.Schema.PersistentTerm do
       start_supervised!({Absinthe.Schema.Manager, Schema})
@@ -217,5 +232,75 @@ defmodule Absinthe.Incremental.RelayTest do
     assert [patch, final] = Enum.to_list(result.subsequent_results)
     assert patch.extensions == %{trace: "present", is_final: false}
     assert final.extensions == %{trace: "present", is_final: true}
+  end
+
+  test "deferred errors stay scoped to each list item and retain order across snapshots" do
+    query = """
+    { person { friends { id failure ... @defer(label: "Q$defer$Details") { later: failure } } } }
+    """
+
+    assert {:ok, result} =
+             Absinthe.run_incremental(query, Schema,
+               incremental_format: :relay,
+               root_value: %{person: %{friends: Enum.map(1..256, &%{id: &1})}}
+             )
+
+    patches = Enum.filter(result.subsequent_results, &Map.has_key?(&1, :label))
+    assert length(patches) == 256
+
+    for {patch, index} <- Enum.with_index(patches) do
+      assert patch.path == ["person", "friends", index]
+
+      assert Enum.map(patch.errors, & &1.path) == [["failure"], ["later"]]
+      assert Enum.all?(patch.errors, &(&1.message == "unavailable"))
+    end
+  end
+
+  test "pathless result errors preserve their order among errors scoped to the deferred object" do
+    assert {:ok, result} =
+             Absinthe.run_incremental(
+               "{ person { id ... @defer(label: \"Q$defer$Details\") { failure } } }",
+               Schema,
+               incremental_format: :relay,
+               root_value: %{person: %{id: 1}},
+               pipeline_modifier: fn pipeline, _ ->
+                 Absinthe.Pipeline.replace(
+                   pipeline,
+                   Absinthe.Phase.Document.Result,
+                   PathlessErrors
+                 )
+               end
+             )
+
+    assert [patch, %{hasNext: false}] = Enum.to_list(result.subsequent_results)
+
+    assert [
+             %{message: "before"},
+             %{message: "unavailable", path: ["failure"]},
+             %{message: "after"}
+           ] =
+             patch.errors
+  end
+
+  test "halting within a batch of deferred snapshots leaves later resolvers unexecuted" do
+    query = """
+    { person {
+      id
+      ...Outer @defer(label: "Q$defer$Outer")
+      ... @defer(label: "Q$defer$Later") { name }
+    } }
+    fragment Outer on Person { id ...Inner @defer(label: "Outer$defer$Inner") }
+    fragment Inner on Person { failure }
+    """
+
+    assert {:ok, result} =
+             Absinthe.run_incremental(query, Schema,
+               incremental_format: :relay,
+               root_value: %{person: %{id: 1, name: "Ada"}},
+               context: %{test_pid: self()}
+             )
+
+    assert [%{label: "Q$defer$Outer"}] = Enum.take(result.subsequent_results, 1)
+    refute_received :resolved_name
   end
 end

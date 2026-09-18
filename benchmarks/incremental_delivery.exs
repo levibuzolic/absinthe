@@ -1,6 +1,7 @@
 # Run with: mix run benchmarks/incremental_delivery.exs
 # Report median initial-response and continuation times separately. These
 # queries exercise shared buffers, blocked child groups, and streamed items.
+# Relay stops at the first failed boundary; draft format completes each group.
 defmodule IncrementalDeliveryBenchmark.Schema do
   use Absinthe.Schema
   import_directives Absinthe.Type.BuiltIns.IncrementalDirectives
@@ -14,21 +15,32 @@ defmodule IncrementalDeliveryBenchmark.Schema do
     field :value, :integer
     field :extra, :integer
     field :nullable_value, :integer
+
+    field :failure, :string do
+      resolve fn _, _ -> {:error, "unavailable"} end
+    end
+
+    field :required_failure, non_null(:string) do
+      resolve fn _, _ -> {:error, "unavailable"} end
+    end
   end
 end
 
 queries = [
   {"nullable values", "{ rows { id } ... @defer { rows { nullableValue } } }"},
+  {"nullable errors", "{ rows { id ... @defer { failure } } }"},
+  {"failed groups", "{ rows { id ... @defer { requiredFailure } } }"},
   {"shared group", "{ rows { id } ... @defer { rows { value } } }"},
   {"nested groups", "{ rows { id } ... @defer { rows { value ... @defer { extra } } } }"},
   {"stream with defer", "{ rows @stream { id ... @defer { value } } }"}
 ]
 
-measure = fn query, rows ->
+measure = fn query, rows, format ->
   {initial, {:ok, response}} =
     :timer.tc(fn ->
       Absinthe.run_incremental(query, IncrementalDeliveryBenchmark.Schema,
-        root_value: %{rows: rows}
+        root_value: %{rows: rows},
+        incremental_format: format
       )
     end)
 
@@ -36,17 +48,17 @@ measure = fn query, rows ->
   {initial, subsequent}
 end
 
-IO.puts("scenario | rows | initial ms | continuation ms")
+IO.puts("format | scenario | rows | initial ms | continuation ms")
 
-for {name, query} <- queries, count <- [500, 1_000, 2_000, 4_000] do
+for format <- [:draft, :relay], {name, query} <- queries, count <- [500, 1_000, 2_000, 4_000] do
   rows = Enum.map(1..count, &%{id: &1, value: &1, extra: &1})
-  measure.(query, rows)
-  samples = for _ <- 1..5, do: measure.(query, rows)
+  measure.(query, rows, format)
+  samples = for _ <- 1..5, do: measure.(query, rows, format)
 
   medians =
     for index <- [0, 1] do
       samples |> Enum.map(&elem(&1, index)) |> Enum.sort() |> Enum.at(2) |> Kernel./(1_000)
     end
 
-  IO.puts(Enum.join([name, count | Enum.map(medians, &Float.round(&1, 2))], " | "))
+  IO.puts(Enum.join([format, name, count | Enum.map(medians, &Float.round(&1, 2))], " | "))
 end
