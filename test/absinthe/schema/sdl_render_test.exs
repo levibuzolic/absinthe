@@ -120,6 +120,10 @@ defmodule Absinthe.Schema.SdlRenderTest do
     use Absinthe.Schema
     @schema_provider Absinthe.Schema.PersistentTerm
 
+    @string_default "  " <> ~S(#{literal}) <> " \n\t\0  " <> String.duplicate("x", 5_001)
+
+    def string_default, do: @string_default
+
     import_directives Absinthe.Type.BuiltIns.IncrementalDirectives
 
     scalar :code do
@@ -142,6 +146,7 @@ defmodule Absinthe.Schema.SdlRenderTest do
       field :export, :string do
         arg :code, :code, default_value: :blue
         arg :order, non_null(:export_order), default_value: :asc
+        arg :literal_string, :string, default_value: @string_default
 
         arg :options, :export_options,
           default_value: %{sort_order: :desc, enabled: false, codes: [:blue, nil]}
@@ -170,6 +175,25 @@ defmodule Absinthe.Schema.SdlRenderTest do
              Mix.Tasks.Absinthe.Schema.Sdl.generate_schema(%Mix.Tasks.Absinthe.Schema.Sdl.Options{
                schema: DefaultValuesSchema
              })
+  end
+
+  test "renders long string defaults as parseable GraphQL strings" do
+    sdl = Absinthe.Schema.to_sdl(DefaultValuesSchema)
+
+    assert {:ok, %{input: %Absinthe.Language.Document{definitions: definitions}}} =
+             Absinthe.Phase.Parse.run(sdl)
+
+    default_value =
+      definitions
+      |> Enum.find(&match?(%Absinthe.Language.ObjectTypeDefinition{name: "RootQueryType"}, &1))
+      |> Map.fetch!(:fields)
+      |> Enum.find(&(&1.name == "export"))
+      |> Map.fetch!(:arguments)
+      |> Enum.find(&(&1.name == "literalString"))
+      |> Map.fetch!(:default_value)
+
+    assert %Absinthe.Language.StringValue{value: value} = default_value
+    assert value == DefaultValuesSchema.string_default()
   end
 
   describe "Render SDL" do
