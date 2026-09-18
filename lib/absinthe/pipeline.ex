@@ -106,6 +106,8 @@ defmodule Absinthe.Pipeline do
       Phase.Document.Validation.FieldsOnCorrectType,
       Phase.Document.Validation.OneOfDirective,
       Phase.Document.Validation.OnlyOneSubscription,
+      Phase.Document.Validation.IncrementalDirectives,
+      Phase.Document.Validation.IncrementalStreams,
       # Check Validation
       {Phase.Document.Validation.Result, options},
       # Prepare for Execution

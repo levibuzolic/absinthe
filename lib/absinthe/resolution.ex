@@ -77,7 +77,11 @@ defmodule Absinthe.Resolution do
     fields_cache: %{},
     # Internal to the resolution phase: suspended fields collected during the
     # current pass, as `{ref, %Absinthe.Resolution{}}` in reverse walk order.
-    pending: []
+    pending: [],
+    incremental: nil,
+    operation_type: nil,
+    incremental_subscription: false,
+    delivery: MapSet.new()
   ]
 
   def resolver_spec(fun) do

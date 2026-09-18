@@ -20,7 +20,9 @@ defmodule Absinthe.Blueprint.Document.Field do
     complexity: nil,
     # Set during resolution, this holds the concrete parent type
     # as determined by the resolution phase.
-    parent_type: nil
+    parent_type: nil,
+    # Original occurrences and their enclosing incremental delivery groups.
+    field_details: nil
   ]
 
   @type t :: %__MODULE__{
