@@ -79,7 +79,6 @@ defmodule Absinthe.Resolution do
     # current pass, as `{ref, %Absinthe.Resolution{}}` in reverse walk order.
     pending: [],
     incremental: nil,
-    operation_type: nil,
     incremental_subscription: false,
     delivery: MapSet.new()
   ]

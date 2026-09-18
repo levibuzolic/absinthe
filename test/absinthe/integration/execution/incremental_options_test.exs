@@ -184,7 +184,7 @@ defmodule Absinthe.Integration.Execution.IncrementalOptionsTest do
       Pipeline.replace(
         pipeline,
         Phase.Document.Execution.Resolution,
-        {TraceResolution, incremental: true, tag: :configured}
+        {TraceResolution, tag: :configured}
       )
     end
 
@@ -203,5 +203,18 @@ defmodule Absinthe.Integration.Execution.IncrementalOptionsTest do
 
     assert_received {:resolution_phase, :configured}
     assert_received {:resolved, "delayed"}
+  end
+
+  test "removing the incremental boundary fails before executing any resolver" do
+    modifier = fn pipeline, _ -> Pipeline.without(pipeline, Absinthe.Incremental.Start) end
+
+    assert_raise RuntimeError, "Could not find phase Elixir.Absinthe.Incremental.Start", fn ->
+      Absinthe.run_incremental("{ value ... @defer { delayed: value } }", Schema,
+        context: %{test_pid: self()},
+        pipeline_modifier: modifier
+      )
+    end
+
+    refute_received {:resolved, _}
   end
 end

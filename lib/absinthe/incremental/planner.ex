@@ -2,7 +2,7 @@ defmodule Absinthe.Incremental.Planner do
   @moduledoc false
 
   alias Absinthe.{Blueprint, Type}
-  alias Absinthe.Incremental.State
+  alias Absinthe.Incremental.{Directives, State}
 
   def project(parent, parent_type, source, path, res) do
     details = Map.get(parent, :field_details) || [{parent, nil}]
@@ -15,25 +15,26 @@ defmodule Absinthe.Incremental.Planner do
       end)
 
     {fields, partitions, partition_order} =
-      Enum.reduce(collected.order, {[], %{}, []}, fn key, {fields, partitions, order} ->
-        details = Map.fetch!(collected.fields, key)
+      Enum.reduce(Enum.reverse(collected.order), {[], %{}, []}, fn key,
+                                                                   {fields, partitions, order} ->
+        details = collected.fields |> Map.fetch!(key) |> Enum.reverse()
         usages = filtered_usages(details, collected.state)
         field = merge(details)
 
         if usages == res.delivery do
           {[field | fields], partitions, order}
         else
-          order = if Map.has_key?(partitions, usages), do: order, else: order ++ [usages]
-          {fields, Map.update(partitions, usages, [field], &(&1 ++ [field])), order}
+          order = if Map.has_key?(partitions, usages), do: order, else: [usages | order]
+          {fields, Map.update(partitions, usages, [field], &[field | &1]), order}
         end
       end)
 
     state =
-      Enum.reduce(partition_order, collected.state, fn usages, state ->
+      Enum.reduce(Enum.reverse(partition_order), collected.state, fn usages, state ->
         State.enqueue(state, %{
           kind: :defer,
           groups: usages,
-          fields: Map.fetch!(partitions, usages),
+          fields: partitions |> Map.fetch!(usages) |> Enum.reverse(),
           emitter: parent,
           source: source,
           parent_type: parent_type,
@@ -41,7 +42,59 @@ defmodule Absinthe.Incremental.Planner do
         })
       end)
 
-    {Enum.reverse(fields), %{res | incremental: state}}
+    {:ok, Enum.reverse(fields), %{res | incremental: state}}
+  catch
+    {:incremental_subscription, directive} -> {:error, directive}
+  end
+
+  def prepare_stream(nil, _field, res), do: {nil, res, []}
+
+  def prepare_stream(value, field, res) do
+    case Directives.active(field, :stream) do
+      {_, _} when res.incremental_subscription ->
+        {nil, res, ["The @stream directive is not supported on subscription operations."]}
+
+      {_, %{initial_count: count}} when count < 0 ->
+        {nil, res, ["The initialCount argument to @stream must be a non-negative integer."]}
+
+      {_, args} when not is_nil(res.incremental) and is_list(value) ->
+        {prefix, tail} = Enum.split(value, args.initial_count)
+
+        if tail == [] do
+          {prefix, res, []}
+        else
+          %Type.List{of_type: item_type} = Type.unwrap_non_null(field.schema_node.type)
+
+          {group, state} =
+            State.group(res.incremental, %{
+              kind: :stream,
+              path: State.path(res.path),
+              label: args[:label],
+              parent: nil
+            })
+
+          state =
+            State.enqueue(state, %{
+              kind: :stream,
+              groups: MapSet.new([group]),
+              values: tail,
+              index: length(prefix),
+              path: res.path,
+              emitter: %{
+                field
+                | field_details: Enum.map(field.field_details, fn {node, _} -> {node, nil} end)
+              },
+              item_type: item_type,
+              source: res.source,
+              extensions: res.extensions
+            })
+
+          {prefix, %{res | incremental: state}, []}
+        end
+
+      _ ->
+        {value, res, []}
+    end
   end
 
   defp collect(selections, usage, type, path, res, acc) do
@@ -55,8 +108,8 @@ defmodule Absinthe.Incremental.Planner do
   defp collect_selection(%Blueprint.Document.Field{} = field, usage, type, _, _, acc) do
     field = concrete_field(field, type)
     key = field.alias || field.name
-    order = if Map.has_key?(acc.fields, key), do: acc.order, else: acc.order ++ [key]
-    fields = Map.update(acc.fields, key, [{field, usage}], &(&1 ++ [{field, usage}]))
+    order = if Map.has_key?(acc.fields, key), do: acc.order, else: [key | acc.order]
+    fields = Map.update(acc.fields, key, [{field, usage}], &[{field, usage} | &1])
     %{acc | fields: fields, order: order}
   end
 
@@ -85,7 +138,7 @@ defmodule Absinthe.Incremental.Planner do
          acc
        ) do
     fragment = Map.fetch!(res.fragments, name)
-    directive = State.directive(spread, "defer")
+    directive = Directives.active(spread, :defer)
     token = if directive, do: elem(directive, 0), else: usage_token(usage, acc.state)
     visited = Map.get(acc.visited, name, MapSet.new())
 
@@ -103,12 +156,12 @@ defmodule Absinthe.Incremental.Planner do
   defp usage_token(usage, state), do: state.groups[usage].directive
 
   defp defer(fragment, parent, path, res, acc) do
-    case State.directive(fragment, "defer") do
+    case Directives.active(fragment, :defer) do
       nil ->
         {parent, acc}
 
       {directive, args} ->
-        if res.operation_type == :subscription do
+        if res.incremental_subscription do
           throw({:incremental_subscription, directive})
         end
 
@@ -147,6 +200,15 @@ defmodule Absinthe.Incremental.Planner do
       | selections: Enum.flat_map(details, fn {field, _} -> field.selections end),
         field_details: details
     }
+  end
+
+  def retain_fields(fields, failed) do
+    Enum.flat_map(fields, fn field ->
+      case Enum.reject(field.field_details, fn {_, usage} -> MapSet.member?(failed, usage) end) do
+        [] -> []
+        details -> [merge(details)]
+      end
+    end)
   end
 
   defp concrete_field(%{name: "__" <> _} = field, type), do: %{field | parent_type: type}

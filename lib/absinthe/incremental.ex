@@ -11,7 +11,8 @@ defmodule Absinthe.Incremental do
   `045e19363c2b55f127960bd3b5e8072a15b29aec`, which remains a draft.
   """
 
-  alias Absinthe.Incremental.Delivery
+  alias Absinthe.{Phase, Pipeline}
+  alias Absinthe.Incremental.{Delivery, Start, State}
 
   @enforce_keys [:initial_result, :subsequent_results]
   defstruct [:initial_result, :subsequent_results]
@@ -20,21 +21,19 @@ defmodule Absinthe.Incremental do
 
   @doc false
   def run(document, schema, options) do
-    options = Keyword.put(options, :incremental, true)
     modifier = options[:pipeline_modifier] || fn pipeline, _ -> pipeline end
 
     pipeline =
       schema
-      |> Absinthe.Pipeline.for_document(options)
-      |> Absinthe.Pipeline.insert_before(
-        Absinthe.Phase.Document.Execution.Resolution,
-        Absinthe.Incremental.Start
-      )
+      |> Pipeline.for_document(options)
+      |> Pipeline.insert_before(Phase.Document.Execution.Resolution, Start)
       |> modifier.(options)
 
-    case Absinthe.Pipeline.run(document, pipeline) do
+    continuation = pipeline |> Pipeline.from(Start) |> tl() |> Pipeline.without(Phase.Telemetry)
+
+    case Pipeline.run(document, pipeline) do
       {:ok, blueprint, _} ->
-        finish(blueprint, continuation(pipeline))
+        finish(blueprint, continuation)
 
       {:error, error, _} ->
         {:error, error}
@@ -44,27 +43,23 @@ defmodule Absinthe.Incremental do
   defp finish(%{execution: %{incremental: nil}, result: result}, _), do: {:ok, result}
 
   defp finish(blueprint, pipeline) do
-    state = Delivery.prune(blueprint.execution.incremental, [], blueprint.result[:data])
+    state =
+      Delivery.prune(
+        blueprint.execution.incremental,
+        [],
+        blueprint.result[:data],
+        blueprint.execution.result
+      )
+
     {pending, state} = Delivery.announce(state)
 
-    if state.jobs == [] do
-      {:ok, blueprint.result}
-    else
+    if State.pending?(state) do
       blueprint = put_in(blueprint.execution.incremental, state)
       initial = Map.merge(blueprint.result, %{pending: pending, hasNext: true})
       subsequent = Stream.unfold(blueprint, &Delivery.next(&1, pipeline))
       {:ok, %__MODULE__{initial_result: initial, subsequent_results: subsequent}}
+    else
+      {:ok, blueprint.result}
     end
   end
-
-  defp continuation(pipeline) do
-    pipeline
-    |> List.flatten()
-    |> Enum.drop_while(&(phase_module(&1) != Absinthe.Incremental.Start))
-    |> Enum.drop(1)
-    |> Enum.reject(&(phase_module(&1) == Absinthe.Phase.Telemetry))
-  end
-
-  defp phase_module({module, _options}), do: module
-  defp phase_module(module), do: module
 end

@@ -172,9 +172,12 @@ Batch, and Dataloader plugins remain responsible for resolving fields; context
 and accumulator state carry forward between incremental execution steps.
 Complexity analysis includes deferred and streamed selections before execution.
 
-Pipeline modifiers apply to initial and subsequent execution, including custom
-resolution and result phases. Result phases must preserve the GraphQL result
-shape so incremental delivery can associate data and errors with response paths.
+The execution and result phases selected by a pipeline modifier run for initial
+and subsequent execution. Preserve the inserted `Absinthe.Incremental.Start`
+phase: it marks the start of the pipeline portion reused for later payloads.
+Removing it raises before any resolver runs. Result phases must preserve the
+GraphQL result shape so incremental delivery can associate data and errors with
+response paths.
 Their `extensions` maps are included on the corresponding payload; when several
 buffered results are released together, later maps override duplicate keys.
 

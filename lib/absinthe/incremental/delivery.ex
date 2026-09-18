@@ -3,12 +3,13 @@ defmodule Absinthe.Incremental.Delivery do
 
   alias Absinthe.Incremental.State
 
-  def next(%{execution: %{incremental: %{jobs: []}}}, _options), do: nil
-
   def next(blueprint, pipeline) do
+    if State.pending?(blueprint.execution.incremental), do: execute_next(blueprint, pipeline)
+  end
+
+  defp execute_next(blueprint, pipeline) do
     state = blueprint.execution.incremental
-    frame = Enum.find(state.jobs, &announced?(&1, state))
-    state = %{State.remove(state, frame) | frame: frame}
+    {frame, state} = State.take(state)
 
     execution = %{
       blueprint.execution
@@ -37,25 +38,25 @@ defmodule Absinthe.Incremental.Delivery do
 
   defp deliver(blueprint, frame) do
     result = blueprint.result
-    state = %{blueprint.execution.incremental | frame: nil}
+    state = blueprint.execution.incremental
 
     {stream_entries, emitted_extensions, state} =
       if failed?(frame, result) do
+        state = State.finish(state, frame)
         {[], Map.get(result, :extensions, %{}), fail(state, frame, Map.get(result, :errors, []))}
       else
         state = continue_stream(state, frame)
-        state = prune(state, frame_path(frame), result.data)
+        state = State.finish(state, frame)
+        state = prune(state, frame_path(frame), result.data, blueprint.execution.result)
 
         case frame.kind do
           :stream -> {[entry(frame, result, state)], Map.get(result, :extensions, %{}), state}
-          :defer -> {[], %{}, %{state | buffered: state.buffered ++ [{frame, result}]}}
+          :defer -> {[], %{}, State.buffer(state, frame, result)}
         end
       end
 
-    {entries, buffered_extensions, state} = flush(state)
-    {completed, state} = complete(state)
-    {pending, state} = announce(state)
-    payload = %{hasNext: state.jobs != []}
+    {entries, buffered_extensions, completed, pending, state} = publish(state)
+    payload = %{hasNext: State.pending?(state)}
     extensions = Map.merge(buffered_extensions, emitted_extensions)
 
     payload =
@@ -70,30 +71,55 @@ defmodule Absinthe.Incremental.Delivery do
     {payload, put_in(blueprint.execution.incremental, state)}
   end
 
+  # Publishing a parent can release a child whose shared work already finished.
+  # Settle those publications here even when there is no resolver work left.
+  defp publish(state) do
+    {entries, extensions, state} = flush(state)
+    {completed, state} = complete(state)
+    {pending, state} = announce(state)
+
+    if MapSet.size(state.completion_candidates) == 0 do
+      {entries, extensions, completed, pending, state}
+    else
+      {more, later_extensions, later_completed, later_pending, state} = publish(state)
+
+      {entries ++ more, Map.merge(extensions, later_extensions), completed ++ later_completed,
+       pending ++ later_pending, state}
+    end
+  end
+
   defp flush(state) do
     # Private values belong to the whole delivery group. An earlier successful
     # task must not leak them if a later task fails. Shared values become safe
     # once any of their owners succeeds, and are then delivered only once.
-    {entries, extensions, buffered} =
-      Enum.reduce(state.buffered, {[], %{}, []}, fn {frame, result},
-                                                    {entries, extensions, buffered} ->
-        ready =
-          MapSet.filter(frame.groups, fn ref ->
-            group = state.groups[ref]
+    ready =
+      MapSet.filter(state.completion_candidates, fn ref ->
+        group = state.groups[ref]
+        group.id != nil and not State.has_work?(state, ref) and not Map.has_key?(group, :errors)
+      end)
 
-            group.id != nil and not State.has_work?(state, ref) and
-              not Map.has_key?(group, :errors)
-          end)
+    refs =
+      ready
+      |> Enum.flat_map(&state.groups[&1].buffered)
+      |> Enum.uniq()
+      |> Enum.sort()
 
-        if MapSet.size(ready) > 0 do
-          {[entry(%{frame | groups: ready}, result, state) | entries],
-           Map.merge(extensions, Map.get(result, :extensions, %{})), buffered}
-        else
-          {entries, extensions, [{frame, result} | buffered]}
+    {entries, extensions, state} =
+      Enum.reduce(refs, {[], %{}, state}, fn ref, {entries, extensions, state} ->
+        case Map.pop(state.buffered, ref) do
+          {nil, _} ->
+            {entries, extensions, state}
+
+          {{frame, result}, buffered} ->
+            frame = %{frame | groups: MapSet.intersection(frame.groups, ready)}
+            state = State.wake(%{state | buffered: buffered}, {:frame, ref})
+
+            {[entry(frame, result, state) | entries],
+             Map.merge(extensions, Map.get(result, :extensions, %{})), state}
         end
       end)
 
-    {Enum.reverse(entries), extensions, %{state | buffered: Enum.reverse(buffered)}}
+    {Enum.reverse(entries), extensions, state}
   end
 
   defp failed?(%{kind: :defer}, %{data: nil}), do: true
@@ -129,148 +155,205 @@ defmodule Absinthe.Incremental.Delivery do
     |> put_nonempty(:errors, Map.get(result, :errors, []))
   end
 
-  defp announced?(frame, state), do: Enum.any?(frame.groups, &(state.groups[&1].id != nil))
-
   def announce(state) do
-    {notices, state, unannounced} =
-      Enum.reduce(Enum.reverse(state.unannounced), {[], state, []}, fn ref,
-                                                                       {notices, state,
-                                                                        unannounced} ->
+    refs = Enum.sort(state.unannounced)
+    state = %{state | unannounced: []}
+
+    {notices, state} =
+      Enum.reduce(refs, {[], state}, fn ref, {notices, state} ->
         group = state.groups[ref]
 
-        if State.has_work?(state, ref) and released?(state, group.parent) and
-             owner_delivered?(state, group.owner) do
-          id = Integer.to_string(state.next_id)
+        if State.has_work?(state, ref) or State.has_buffered?(state, ref) do
+          case blocked_on(state, group) do
+            nil ->
+              id = Integer.to_string(state.next_id)
 
-          state = %{
-            state
-            | groups: Map.put(state.groups, ref, %{group | id: id}),
-              next_id: state.next_id + 1
-          }
+              state = State.announced(state, ref, id)
 
-          notice = %{id: id, path: group.path}
-          notice = if is_nil(group.label), do: notice, else: Map.put(notice, :label, group.label)
-          {[notice | notices], state, unannounced}
+              notice = %{id: id, path: group.path}
+
+              notice =
+                if is_nil(group.label), do: notice, else: Map.put(notice, :label, group.label)
+
+              {[notice | notices], state}
+
+            dependency ->
+              {notices, State.wait_for(state, dependency, ref)}
+          end
         else
-          unannounced = if State.has_work?(state, ref), do: [ref | unannounced], else: unannounced
-          {notices, state, unannounced}
+          {notices, state}
         end
       end)
 
-    {Enum.reverse(notices), %{state | unannounced: unannounced}}
+    {Enum.reverse(notices), state}
   end
 
-  defp owner_delivered?(_, nil), do: true
-
-  defp owner_delivered?(state, owner) do
-    not Enum.any?(state.buffered, fn {frame, _} -> frame.ref == owner end)
+  defp blocked_on(state, group) do
+    blocking_parent(state, group.parent) ||
+      if Map.has_key?(state.buffered, group.owner), do: {:frame, group.owner}
   end
 
-  defp released?(_, nil), do: true
+  defp blocking_parent(_, nil), do: nil
 
-  defp released?(state, ref) do
+  defp blocking_parent(state, ref) do
     group = state.groups[ref]
-    (group.done or not State.has_work?(state, ref)) and released?(state, group.parent)
+    if State.has_work?(state, ref), do: {:group, ref}, else: blocking_parent(state, group.parent)
   end
 
   defp complete(state) do
-    refs = Enum.sort_by(state.completion_candidates, &state.groups[&1].ordinal)
+    refs = Enum.sort(state.completion_candidates)
     state = %{state | completion_candidates: MapSet.new()}
 
-    Enum.reduce(refs, {[], state}, fn ref, {notices, state} ->
-      group = state.groups[ref]
+    {notices, state} =
+      Enum.reduce(refs, {[], state}, fn ref, {notices, state} ->
+        group = state.groups[ref]
 
-      if group.id != nil and not group.done and not State.has_work?(state, ref) do
-        notice = %{id: group.id} |> put_nonempty(:errors, Map.get(group, :errors, []))
-        state = %{state | groups: Map.put(state.groups, ref, %{group | done: true})}
-        {notices ++ [notice], state}
-      else
-        {notices, state}
-      end
-    end)
-  end
+        if group.id != nil and not group.done and not State.has_work?(state, ref) do
+          notice = %{id: group.id} |> put_nonempty(:errors, Map.get(group, :errors, []))
 
-  defp fail(state, frame, errors) do
-    groups =
-      Enum.reduce(state.order, frame.groups, fn ref, groups ->
-        if state.groups[ref].owner == frame.ref, do: MapSet.put(groups, ref), else: groups
-      end)
+          state = %{
+            state
+            | groups: Map.put(state.groups, ref, %{group | done: true, buffered: []})
+          }
 
-    failed =
-      Enum.reduce(Enum.reverse(state.order), groups, fn ref, failed ->
-        if MapSet.member?(failed, state.groups[ref].parent),
-          do: MapSet.put(failed, ref),
-          else: failed
-      end)
-
-    jobs =
-      Enum.flat_map(state.jobs, fn job ->
-        groups = MapSet.difference(job.groups, failed)
-
-        cond do
-          MapSet.size(groups) == 0 -> []
-          groups == job.groups -> [job]
-          true -> [%{job | groups: groups, fields: retain_fields(job.fields, failed)}]
+          {[notice | notices], state}
+        else
+          {notices, state}
         end
       end)
 
-    buffered =
-      Enum.flat_map(state.buffered, fn {frame, result} ->
-        groups = MapSet.difference(frame.groups, failed)
-        if MapSet.size(groups) == 0, do: [], else: [{%{frame | groups: groups}, result}]
+    {Enum.reverse(notices), state}
+  end
+
+  defp fail(state, frame, errors) do
+    {failed, unpublished} = failed_descendants(state, frame)
+
+    state =
+      State.restrict_jobs(state, fn job ->
+        groups = MapSet.difference(job.groups, failed)
+
+        cond do
+          MapSet.size(groups) == 0 ->
+            nil
+
+          groups == job.groups ->
+            job
+
+          true ->
+            %{
+              job
+              | groups: groups,
+                fields: Absinthe.Incremental.Planner.retain_fields(job.fields, failed)
+            }
+        end
       end)
 
-    state = %{State.replace_jobs(state, jobs) | buffered: buffered}
+    refs = failed |> Enum.flat_map(&state.groups[&1].buffered) |> Enum.uniq()
+
+    buffered =
+      Enum.reduce(refs, state.buffered, fn ref, buffered ->
+        case Map.fetch(buffered, ref) do
+          :error ->
+            buffered
+
+          {:ok, {frame, result}} ->
+            groups = MapSet.difference(frame.groups, failed)
+
+            if MapSet.size(groups) == 0,
+              do: Map.delete(buffered, ref),
+              else: Map.put(buffered, ref, {%{frame | groups: groups}, result})
+        end
+      end)
+
+    dependencies = Enum.map(failed, &{:group, &1}) ++ Enum.map(unpublished, &{:frame, &1})
+    state = State.cancel_waiters(%{state | buffered: buffered}, dependencies)
 
     Enum.reduce(failed, state, fn ref, state ->
-      %{state | groups: Map.update!(state.groups, ref, &Map.put(&1, :errors, errors))}
+      %{
+        state
+        | groups:
+            Map.update!(
+              state.groups,
+              ref,
+              &(&1 |> Map.put(:errors, errors) |> Map.put(:buffered, []))
+            )
+      }
     end)
   end
 
-  defp retain_fields(fields, failed) do
-    Enum.flat_map(fields, fn field ->
-      details =
-        Enum.reject(field.field_details, fn {_, usage} -> MapSet.member?(failed, usage) end)
+  defp failed_descendants(state, frame) do
+    # A group's parents and the owners of its source value always precede it.
+    # This lets one pass cancel both nested defers and streams belonging to
+    # earlier private values that were buffered before this frame failed.
+    Enum.reduce(
+      Enum.sort(Map.keys(state.groups)),
+      {frame.groups, MapSet.new([frame.ref])},
+      fn ref, {failed, unpublished} ->
+        group = state.groups[ref]
 
-      case details do
-        [] ->
-          []
+        if MapSet.member?(failed, ref) or MapSet.member?(failed, group.parent) or
+             MapSet.member?(unpublished, group.owner) do
+          failed = MapSet.put(failed, ref)
 
-        [{first, _} | _] ->
-          [
-            %{
-              first
-              | field_details: details,
-                selections: Enum.flat_map(details, fn {node, _} -> node.selections end)
-            }
-          ]
+          unpublished =
+            Enum.reduce(group.buffered, unpublished, fn value_ref, unpublished ->
+              case Map.fetch(state.buffered, value_ref) do
+                {:ok, {value_frame, _}} ->
+                  if MapSet.subset?(value_frame.groups, failed),
+                    do: MapSet.put(unpublished, value_ref),
+                    else: unpublished
+
+                :error ->
+                  unpublished
+              end
+            end)
+
+          {failed, unpublished}
+        else
+          {failed, unpublished}
+        end
       end
-    end)
+    )
   end
 
   # Work is meaningful only while the object/list containing it exists in the
   # just-completed result. Missing fields belong to other delivery groups.
-  def prune(state, base, data) do
-    if contains_null?(data) do
-      jobs =
-        Enum.reject(state.jobs, fn job ->
-          path = State.path(job.path)
-          List.starts_with?(path, base) and null_at?(data, Enum.drop(path, length(base)))
-        end)
+  def prune(state, base, data, execution_result) do
+    if may_invalidate_work?(execution_result, data) do
+      State.restrict_jobs(state, fn job ->
+        path = State.path(job.path)
 
-      State.replace_jobs(state, jobs)
+        unless List.starts_with?(path, base) and null_at?(data, Enum.drop(path, length(base))),
+          do: job
+      end)
     else
       state
     end
   end
 
-  defp contains_null?(nil), do: true
+  # An ordinary null leaf never scheduled descendants. Error propagation or a
+  # result phase nulling a completed container can invalidate queued work.
+  defp may_invalidate_work?(%{errors: [_ | _]}, _data), do: true
+  defp may_invalidate_work?(%{fields: fields}, nil) when is_list(fields), do: true
+  defp may_invalidate_work?(%{values: _}, nil), do: true
 
-  defp contains_null?(data) when is_map(data),
-    do: Enum.any?(data, fn {_, value} -> contains_null?(value) end)
+  defp may_invalidate_work?(%{fields: fields}, data) when is_list(fields) and is_map(data) do
+    Enum.any?(fields, fn field ->
+      key = Map.get(field.emitter, :alias) || field.emitter.name
 
-  defp contains_null?(data) when is_list(data), do: Enum.any?(data, &contains_null?/1)
-  defp contains_null?(_), do: false
+      case Map.fetch(data, key) do
+        {:ok, value} -> may_invalidate_work?(field, value)
+        :error -> false
+      end
+    end)
+  end
+
+  defp may_invalidate_work?(%{values: values}, data) when is_list(data),
+    do:
+      Enum.zip(values, data)
+      |> Enum.any?(fn {node, value} -> may_invalidate_work?(node, value) end)
+
+  defp may_invalidate_work?(_, _), do: false
 
   defp null_at?(nil, _), do: true
   defp null_at?(_, []), do: false

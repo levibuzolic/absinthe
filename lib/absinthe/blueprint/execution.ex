@@ -78,10 +78,7 @@ defmodule Absinthe.Blueprint.Execution do
         schema: bp_root.schema,
         incremental_subscription:
           operation.type == :subscription and
-            match?(
-              %{definition: Absinthe.Type.BuiltIns.IncrementalDirectives},
-              Absinthe.Schema.lookup_directive(bp_root.schema, :defer)
-            ),
+            Absinthe.Incremental.Directives.enabled?(bp_root.schema),
         fragments: Map.new(bp_root.fragments, &{&1.name, &1})
     }
   end

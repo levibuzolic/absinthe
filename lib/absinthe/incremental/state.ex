@@ -1,21 +1,24 @@
 defmodule Absinthe.Incremental.State do
   @moduledoc false
 
-  defstruct jobs: [],
+  defstruct jobs: %{},
+            ready: :gb_sets.empty(),
+            next_job: 0,
             groups: %{},
-            order: [],
             unannounced: [],
             next_id: 0,
+            next_frame: 0,
             frame: nil,
-            work: %{},
+            waiting: %{},
             completion_candidates: MapSet.new(),
-            buffered: []
+            buffered: %{}
 
   # Group identities outlive their notices: queued occurrences can still refer
-  # to their ancestry. Work counts keep those identities out of scheduler scans.
+  # to their ancestry. Membership sets track queued and running work, while
+  # ready IDs track only runnable queued jobs. Frame IDs record execution order.
 
   def group(state, attributes) do
-    ref = make_ref()
+    ref = map_size(state.groups)
     owner = if state.frame, do: state.frame.ref
 
     group =
@@ -26,7 +29,8 @@ defmodule Absinthe.Incremental.State do
           parent: nil,
           label: nil,
           owner: owner,
-          ordinal: map_size(state.groups)
+          jobs: MapSet.new(),
+          buffered: []
         },
         attributes
       )
@@ -35,68 +39,132 @@ defmodule Absinthe.Incremental.State do
      %{
        state
        | groups: Map.put(state.groups, ref, group),
-         order: [ref | state.order],
          unannounced: [ref | state.unannounced]
      }}
   end
 
   def enqueue(state, job) do
-    state = change_work(state, job.groups, 1)
-    %{state | jobs: state.jobs ++ [Map.put(job, :ref, make_ref())]}
+    id = state.next_job
+    job = job |> Map.delete(:ref) |> Map.put(:job_id, id)
+    state = change_memberships(state, job.groups, id, :add)
+    ready = if announced?(state, job), do: :gb_sets.add(id, state.ready), else: state.ready
+
+    %{state | jobs: Map.put(state.jobs, id, job), ready: ready, next_job: id + 1}
   end
 
-  def remove(state, job) do
-    state = change_work(state, job.groups, -1)
-    %{state | jobs: List.delete(state.jobs, job)}
+  def pending?(state), do: map_size(state.jobs) > 0
+
+  def take(state) do
+    if :gb_sets.is_empty(state.ready),
+      do: raise("Incremental work has no announced delivery group")
+
+    {id, ready} = :gb_sets.take_smallest(state.ready)
+    {job, jobs} = Map.pop!(state.jobs, id)
+    frame = Map.put(job, :ref, state.next_frame)
+
+    {frame, %{state | jobs: jobs, ready: ready, frame: frame, next_frame: state.next_frame + 1}}
   end
 
-  def replace_jobs(state, jobs) do
-    work =
-      Enum.reduce(jobs, %{}, fn job, work ->
-        Enum.reduce(job.groups, work, &Map.update(&2, &1, 1, fn count -> count + 1 end))
-      end)
+  def finish(state, frame) do
+    state = change_memberships(state, frame.groups, frame.job_id, :remove)
+    %{state | frame: nil}
+  end
+
+  def announced(state, ref, id) do
+    group = state.groups[ref]
+    ready = Enum.reduce(group.jobs, state.ready, &:gb_sets.add/2)
 
     candidates =
-      Enum.reduce(state.work, state.completion_candidates, fn {ref, _}, candidates ->
-        if Map.get(work, ref, 0) == 0,
-          do: MapSet.put(candidates, ref),
-          else: MapSet.delete(candidates, ref)
-      end)
+      if MapSet.size(group.jobs) == 0,
+        do: MapSet.put(state.completion_candidates, ref),
+        else: state.completion_candidates
 
-    %{state | jobs: jobs, work: work, completion_candidates: candidates}
+    %{
+      state
+      | groups: Map.put(state.groups, ref, %{group | id: id}),
+        ready: ready,
+        completion_candidates: candidates,
+        next_id: state.next_id + 1
+    }
   end
 
-  def has_work?(state, ref), do: Map.get(state.work, ref, 0) > 0
+  # Cancellation removes only affected owner memberships. Ready IDs preserve
+  # first-ready FIFO order without repeatedly walking blocked jobs.
+  def restrict_jobs(state, restrict) do
+    Enum.reduce(state.jobs, state, fn {id, job}, state ->
+      case restrict.(job) do
+        nil ->
+          state = change_memberships(state, job.groups, id, :remove)
+          %{state | jobs: Map.delete(state.jobs, id), ready: :gb_sets.delete_any(id, state.ready)}
 
-  defp change_work(state, groups, change) do
-    Enum.reduce(groups, state, fn ref, state ->
-      count = Map.get(state.work, ref, 0) + change
+        retained ->
+          removed = MapSet.difference(job.groups, retained.groups)
+          state = change_memberships(state, removed, id, :remove)
 
-      candidates =
-        if count == 0,
-          do: MapSet.put(state.completion_candidates, ref),
-          else: MapSet.delete(state.completion_candidates, ref)
+          ready =
+            if announced?(state, retained),
+              do: :gb_sets.add(id, state.ready),
+              else: :gb_sets.delete_any(id, state.ready)
 
-      work = if count == 0, do: Map.delete(state.work, ref), else: Map.put(state.work, ref, count)
-      %{state | work: work, completion_candidates: candidates}
+          %{state | jobs: Map.put(state.jobs, id, retained), ready: ready}
+      end
     end)
   end
 
-  def directive(%{directives: directives}, name) do
-    identifier =
-      case name do
-        "defer" -> :defer
-        "stream" -> :stream
-      end
+  defp announced?(state, job), do: Enum.any?(job.groups, &(state.groups[&1].id != nil))
 
-    Enum.find_value(directives, fn directive ->
-      if match?(
-           %{identifier: ^identifier, definition: Absinthe.Type.BuiltIns.IncrementalDirectives},
-           directive.schema_node
-         ) do
-        args = Absinthe.Blueprint.Input.Argument.value_map(directive.arguments)
-        if Map.get(args, :if, true), do: {directive, args}
-      end
+  def buffer(state, frame, result) do
+    groups =
+      Enum.reduce(frame.groups, state.groups, fn ref, groups ->
+        Map.update!(groups, ref, &%{&1 | buffered: [frame.ref | &1.buffered]})
+      end)
+
+    %{state | groups: groups, buffered: Map.put(state.buffered, frame.ref, {frame, result})}
+  end
+
+  def has_work?(state, ref), do: MapSet.size(state.groups[ref].jobs) > 0
+
+  def has_buffered?(state, ref),
+    do: Enum.any?(state.groups[ref].buffered, &Map.has_key?(state.buffered, &1))
+
+  def wait_for(state, dependency, ref) do
+    %{state | waiting: Map.update(state.waiting, dependency, [ref], &[ref | &1])}
+  end
+
+  def wake(state, dependency) do
+    case Map.pop(state.waiting, dependency) do
+      {nil, _} -> state
+      {refs, waiting} -> %{state | waiting: waiting, unannounced: refs ++ state.unannounced}
+    end
+  end
+
+  def cancel_waiters(state, dependencies),
+    do: %{state | waiting: Map.drop(state.waiting, dependencies)}
+
+  defp change_memberships(state, groups, id, action) do
+    Enum.reduce(groups, state, fn ref, state ->
+      group = state.groups[ref]
+
+      jobs =
+        case action do
+          :add -> MapSet.put(group.jobs, id)
+          :remove -> MapSet.delete(group.jobs, id)
+        end
+
+      finished = MapSet.size(jobs) == 0
+
+      candidates =
+        if finished,
+          do: MapSet.put(state.completion_candidates, ref),
+          else: MapSet.delete(state.completion_candidates, ref)
+
+      state = %{
+        state
+        | groups: Map.put(state.groups, ref, %{group | jobs: jobs}),
+          completion_candidates: candidates
+      }
+
+      if finished, do: wake(state, {:group, ref}), else: state
     end)
   end
 

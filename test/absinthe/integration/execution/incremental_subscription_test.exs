@@ -56,12 +56,35 @@ defmodule Absinthe.Integration.Execution.IncrementalSubscriptionTest do
     end
   end
 
+  defmodule StreamOnlySchema do
+    use Absinthe.Schema
+    use Absinthe.Fixture
+
+    import_directives Absinthe.Type.BuiltIns.IncrementalDirectives, only: [:stream]
+
+    query do
+      field :version, :integer
+    end
+
+    object :event do
+      field :numbers, list_of(:integer)
+    end
+
+    subscription do
+      field :event, :event do
+        arg :topic, non_null(:string)
+        config fn %{topic: topic}, _ -> {:ok, topic: topic} end
+      end
+    end
+  end
+
   setup_all do
     start_supervised!({Registry, keys: :duplicate, name: PubSub})
     start_supervised!({Absinthe.Subscription, PubSub})
 
-    if Schema.__absinthe_schema_provider__() == Absinthe.Schema.PersistentTerm do
-      start_supervised!({Absinthe.Schema.Manager, Schema})
+    for schema <- [Schema, StreamOnlySchema],
+        schema.__absinthe_schema_provider__() == Absinthe.Schema.PersistentTerm do
+      start_supervised!(Supervisor.child_spec({Absinthe.Schema.Manager, schema}, id: schema))
     end
 
     :ok
@@ -169,11 +192,30 @@ defmodule Absinthe.Integration.Execution.IncrementalSubscriptionTest do
                     %{data: %{"event" => %{"subject" => %{"__typename" => "Person"}}}}}
   end
 
-  defp subscribe(document, later) do
+  test "subscription execution guards a schema importing only stream" do
+    document = """
+    subscription($later: Boolean!, $topic: String!) {
+      event(topic: $topic) { numbers @stream(if: $later) }
+    }
+    """
+
+    {key, topic} = subscribe(document, true, StreamOnlySchema)
+    publish(key, %{numbers: [1, 2]})
+
+    assert_receive {:event, ^topic, %{data: %{"event" => %{"numbers" => nil}}, errors: [error]}}
+    assert error.path == ["event", "numbers"]
+    assert error.message =~ "subscription"
+
+    {key, topic} = subscribe(document, false, StreamOnlySchema)
+    publish(key, %{numbers: [1, 2]})
+    assert_receive {:event, ^topic, %{data: %{"event" => %{"numbers" => [1, 2]}}}}
+  end
+
+  defp subscribe(document, later, schema \\ Schema) do
     key = Integer.to_string(System.unique_integer([:positive]))
 
     assert {:ok, %{"subscribed" => topic}} =
-             Absinthe.run_incremental(document, Schema,
+             Absinthe.run_incremental(document, schema,
                variables: %{"topic" => key, "later" => later},
                context: %{pubsub: PubSub}
              )
