@@ -64,15 +64,18 @@ defmodule IncrementalHTTP.Bridge do
       root_value: IncrementalHTTP.Schema.root_value(),
       context: %{request_id: id},
       variables: request["variables"] || %{},
-      operation_name: request["operationName"],
-      incremental_format: if(request["protocol"] == "relay", do: :relay, else: :draft)
+      operation_name: request["operationName"]
     ]
 
     result =
-      if request["incremental"] do
-        Absinthe.run_incremental!(request["query"], IncrementalHTTP.Schema, options)
-      else
-        Absinthe.run!(request["query"], IncrementalHTTP.Schema, options)
+      case request["mode"] do
+        "eager" ->
+          Absinthe.run!(request["query"], IncrementalHTTP.Schema, options)
+
+        format when format in ["draft", "relay"] ->
+          format = if format == "relay", do: :relay, else: :draft
+          options = Keyword.put(options, :incremental_format, format)
+          Absinthe.run_incremental!(request["query"], IncrementalHTTP.Schema, options)
       end
 
     case result do

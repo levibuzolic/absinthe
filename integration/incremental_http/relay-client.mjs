@@ -21,8 +21,9 @@ export function observeRelay(
   query,
   {
     variables = {},
-    modern = false,
+    accept = "multipart/mixed;incrementalSpec=relay",
     fragmented = false,
+    truncate = false,
     store = new Store(new RecordSource()),
   } = {},
 ) {
@@ -44,11 +45,10 @@ export function observeRelay(
             method: "POST",
             headers: {
               "content-type": "application/json",
-              accept: modern
-                ? "multipart/mixed;incrementalSpec=v0.2"
-                : "multipart/mixed;incrementalSpec=relay",
+              accept,
               "x-test-id": id,
               "x-test-fragmented": String(fragmented),
+              "x-test-truncate": String(truncate),
             },
             body: JSON.stringify({
               query: request.text,
@@ -59,15 +59,32 @@ export function observeRelay(
           });
           assert.equal(response.status, 200);
           const parts = await meros(response);
+          const isMultipart = Symbol.asyncIterator in parts;
           const emit = (payload) => {
             raw.push(structuredClone(payload));
-            sink.next(payload);
+            sink.next(
+              isMultipart
+                ? payload
+                : {
+                    ...payload,
+                    extensions: { ...payload.extensions, is_final: true },
+                  },
+            );
             events.emit("change");
           };
-          if (parts[Symbol.asyncIterator]) {
+          if (isMultipart) {
             for await (const part of parts) {
               assert.equal(part.json, true);
               emit(part.body);
+            }
+            const terminal = raw.at(-1);
+            if (
+              terminal?.hasNext !== false ||
+              terminal?.extensions?.is_final !== true
+            ) {
+              throw new Error(
+                "Relay response ended before its terminal payload",
+              );
             }
           } else emit(await parts.json());
           sink.complete();

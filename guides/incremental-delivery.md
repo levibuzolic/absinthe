@@ -241,9 +241,12 @@ final markers. Result-phase extensions are preserved.
 Use operations produced by the Relay compiler, including its generated labels,
 IDs, `__typename`, and abstract-type discriminator selections. Configure
 `deferDeduplicatedFields: true` on Relay's `Environment`. Its `Network` must
-return an `Observable` that forwards every parsed response, completes when the
-transport ends, and aborts the request when unsubscribed. A promise returning
-only one JSON response cannot deliver these updates. Relay's
+return an `Observable` that forwards every multipart response, checks for the
+terminal payload before completing, and aborts the request when unsubscribed.
+For an ordinary JSON fallback, add `extensions.is_final: true` before handing
+the response to Relay so it can normalize any eagerly completed fragments.
+A promise returning only one JSON response cannot deliver incremental updates.
+Relay's
 [environment documentation](https://relay.dev/docs/api-reference/relay-runtime/relay-environment/)
 and [network-layer guide](https://relay.dev/docs/guides/network-layer/) describe
 these integration points.

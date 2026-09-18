@@ -150,15 +150,20 @@ zero-pending assertion applies to successfully completed responses only.
 freshly exported Absinthe SDL. `relay-client.mjs` uses Relay's `Environment`,
 `Observable` network, normalized `Store`, and fragment readers, with
 `deferDeduplicatedFields: true`. The `meros` parser supplies multipart bodies
-directly to Relay, and assertions compare them with the server's emitted maps.
-The shared HTTP worker, continuation gates and disconnect checks also apply to
-Relay requests.
+unchanged to Relay, and assertions compare raw wire payloads with the server's
+emitted maps. Multipart EOF without both `hasNext: false` and
+`extensions.is_final: true` is a network error. For an ordinary JSON response,
+the network adds `extensions.is_final: true` before forwarding it to Relay so
+eagerly returned deferred fields are normalized; the captured wire payload
+remains unchanged. The shared HTTP worker, continuation gates and disconnect
+checks also apply to Relay requests.
 
-The 22 Relay tests cover named fragments, aliases, variable initial counts,
+The 24 Relay tests cover named fragments, aliases, variable initial counts,
 fragmented HTTP writes, nested defer/stream combinations, shared fields,
 abstract types, deferred ancestors whose own fields were deduplicated, field
-errors, boundary failures, cancellation, and disabled directives. Connection
-tests compile `@stream_connection`, verify deferred page info, and merge cursor
+errors, boundary failures, cancellation, truncation, disabled directives, and
+eager JSON fallback. Connection tests compile `@stream_connection`, verify
+deferred page info, and merge cursor
 pages in the same normalized store. A null edge on a subsequent page triggers
 final replay and still permits the next page to merge without duplicate nodes
 or cursor warnings. The suite also verifies that the compiler rejects scalar
@@ -180,12 +185,12 @@ Verified locally on macOS on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| One-command runner, Node 24.21.0 / Elixir 1.19.5 / OTP 28.5 | 44 tests passed: 22 Apollo, 22 Relay; no failures or skips |
+| One-command runner, Node 24.21.0 / Elixir 1.19.5 / OTP 28.5 | 46 tests passed: 22 Apollo, 24 Relay; no failures or skips |
 | Harness compilation with warnings as errors, Mix format, pinned Prettier | Passed |
-| Full core suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,621 passed, 3 excluded |
-| Full core suite, same runtime, persistent-term provider | 1,621 passed, 3 excluded |
-| Full core suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,621 tests, no failures, 3 excluded |
-| Full core suite, same runtime, persistent-term provider | 1,621 tests, no failures, 3 excluded |
+| Full core suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,629 passed, 3 excluded |
+| Full core suite, same runtime, persistent-term provider | 1,629 passed, 3 excluded |
+| Full core suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,629 tests, no failures, 3 excluded |
+| Full core suite, same runtime, persistent-term provider | 1,629 tests, no failures, 3 excluded |
 | Ten repeated cancellation probes at `2c0537d9` | 30 Absinthe cancellations and 10 reference comparisons passed |
 | `mix dialyzer` | 0 errors; no new suppressions |
 | Root formatting, documentation generation, `git diff --check` | Passed |

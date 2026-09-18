@@ -47,18 +47,10 @@ function negotiate(accept = "*/*") {
       quality: params.q === undefined ? 1 : Number(params.q),
     };
   });
-  const incremental = types.some(
-    ({ type, params, quality }) =>
-      quality > 0 &&
-      type === "multipart/mixed" &&
-      params.incrementalspec === "v0.2",
-  );
-  // Application-defined opt-in for this test adapter, not a standard version.
-  const relay = types.some(
-    ({ type, params, quality }) =>
-      quality > 0 &&
-      type === "multipart/mixed" &&
-      params.incrementalspec === "relay",
+  const protocols = new Set(
+    types
+      .filter(({ type, quality }) => quality > 0 && type === "multipart/mixed")
+      .map(({ params }) => params.incrementalspec),
   );
   const json = types.find(
     ({ type, quality }) =>
@@ -70,15 +62,18 @@ function negotiate(accept = "*/*") {
         "*/*",
       ].includes(type),
   );
+  // Relay is an application-defined opt-in for this test adapter.
+  let mode;
+  if (protocols.has("relay")) mode = "relay";
+  else if (protocols.has("v0.2")) mode = "draft";
+  else if (json) mode = "eager";
+  else return null;
   return {
-    incremental: incremental || relay,
-    relay,
-    json:
+    mode,
+    jsonType:
       json?.type === "application/graphql-response+json"
         ? "application/graphql-response+json"
-        : json
-          ? "application/json"
-          : null,
+        : "application/json",
   };
 }
 
@@ -148,7 +143,7 @@ export async function startServer({ reference = false } = {}) {
     const response = session.response;
     const isMultipart = session.payloads[0].hasNext === true;
     if (session.payloads.length === 1) {
-      const format = session.relay ? "relay" : "v0.2";
+      const format = session.mode === "relay" ? "relay" : "v0.2";
       response.writeHead(200, {
         "content-type": isMultipart
           ? `multipart/mixed; boundary="absinthe-e2e"; incrementalSpec=${format}`
@@ -184,7 +179,7 @@ export async function startServer({ reference = false } = {}) {
     if (!request.headers["content-type"]?.startsWith("application/json"))
       return reply(415, "JSON required");
     const negotiated = negotiate(request.headers.accept);
-    if (!negotiated.incremental && !negotiated.json)
+    if (!negotiated)
       return reply(
         406,
         "Unsupported incremental protocol or response media type",
@@ -204,8 +199,7 @@ export async function startServer({ reference = false } = {}) {
         events: [],
         payloads: [],
         accept: request.headers.accept,
-        jsonType: negotiated.json || "application/json",
-        relay: negotiated.relay,
+        ...negotiated,
         fragmented: request.headers["x-test-fragmented"] === "true",
         truncate: request.headers["x-test-truncate"] === "true",
       };
@@ -225,8 +219,7 @@ export async function startServer({ reference = false } = {}) {
         query: operation.query,
         variables: operation.variables,
         operationName: operation.operationName,
-        incremental: negotiated.incremental,
-        protocol: negotiated.relay ? "relay" : "modern",
+        mode: negotiated.mode,
       });
       events.emit("change");
     } catch (error) {

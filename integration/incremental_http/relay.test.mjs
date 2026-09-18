@@ -60,8 +60,38 @@ test("Relay compiled defer reconstructs a named fragment", async (t) => {
   assert.equal(client.fragment(Details, final.data.hero).data.display, "Ada");
 });
 
+test("Relay rejects a truncated response before deferred work completes", async (t) => {
+  const client = observeRelay(server, t, DeferQuery, { truncate: true });
+  await assert.rejects(
+    client.finish(),
+    /Relay response ended before its terminal payload/,
+  );
+  assert.equal(client.read().data.hero.id, "1");
+  assert.equal(
+    client.fragment(Details, client.read().data.hero).isMissingData,
+    true,
+  );
+  assert.equal(server.sessions.get(client.id).stopped, ":killed");
+  assert.ok(!paths(client.id).some((path) => path.at(-1) === "display"));
+});
+
+test("Relay accepts ordinary JSON fallback without incremental terminal markers", async (t) => {
+  const verifyWarning = recordReplayWarning(t, DeferQuery);
+  const client = observeRelay(server, t, DeferQuery, {
+    accept: "application/json",
+  });
+  const final = await client.finish();
+  assert.equal(client.fragment(Details, final.data.hero).data.display, "Ada");
+  assert.equal(client.raw.length, 1);
+  assert.equal(client.raw[0].hasNext, undefined);
+  assert.equal(client.raw[0].extensions, undefined);
+  verifyWarning();
+});
+
 test("raw modern incremental frames are not the Relay protocol", async (t) => {
-  const client = observeRelay(server, t, DeferQuery, { modern: true });
+  const client = observeRelay(server, t, DeferQuery, {
+    accept: "multipart/mixed;incrementalSpec=v0.2",
+  });
   await client.initial();
   await assert.rejects(client.finish(), /No data returned/);
 });

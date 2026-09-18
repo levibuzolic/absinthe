@@ -200,13 +200,17 @@ so custom result phases can null containers or hide errors without leaving
 unreachable work queued.
 
 Runnable jobs use an ordered set; groups track their buffered values and waiters
-wake when their dependencies change. Ordinary null values do not trigger scans
-of all pending work. Cancellation after a failure still scans queued work.
+wake when their dependencies change. A separate ownership index preserves
+ancestry even for groups with no independent work. Failed boundaries follow
+those links and restrict only affected jobs. Ordinary null values and nullable
+scalar errors do not trigger scans of pending work. Nulling a container still
+checks queued paths against the execution tree and formatted result.
 Stream overlap validation identifies occurrences by definition and selection
 position, including fields with missing or shared source locations.
 
 The diagnostic `benchmarks/incremental_delivery.exs` measures initial and
-continuation work separately with five-sample medians. Run it with
+continuation work separately with five-sample medians in draft and Relay
+formats, including nullable errors and failed groups. Run it with
 `mix run benchmarks/incremental_delivery.exs`; results depend on the machine
 and are not CI timing assertions.
 
@@ -215,14 +219,18 @@ and are not CI timing assertions.
 Relay compiler/runtime 21.0.1 requires `incremental_format: :relay`. The
 formatter uses execution group metadata to include deduplicated ancestors that
 are absent from draft wire notices, and retains data for complete deferred
-snapshots. This costs memory and can repeat fields on the wire. Failed
-boundaries terminate the Relay operation; nullable streamed items require a
+snapshots. Errors are indexed by response-path prefix so each fragment reads
+its own errors without rescanning earlier failures. This costs memory and can
+repeat fields on the wire. Failed boundaries terminate the Relay operation;
+nullable streamed items require a
 final root replay. See the [compatibility guide](guides/incremental-delivery.md#relay-compatibility).
 
 The [HTTP harness](integration/incremental_http/README.md) generates actual Relay
 artifacts from exported Absinthe SDL and checks its normalized store, fragment
-readers and paginated connections. SDL export now preserves typed macro defaults
-without requiring a started schema provider. Generated artifacts stay out of Git.
+readers and paginated connections, rejects truncated multipart responses, and
+normalizes eagerly completed fragments in JSON fallback responses. SDL export
+preserves typed macro defaults and GraphQL string literals without requiring a
+started schema provider. Generated artifacts stay out of Git.
 
 ## Verification record
 
@@ -231,9 +239,9 @@ Baseline: 1,503 passed, 3 excluded on 2026-09-18. Latest verification on
 
 | Check | Result |
 | --- | --- |
-| Clean full core suites, Elixir 1.20.3 / OTP 29.0.5, both schema providers | 1,621 passed per run; 3 excluded |
-| Clean full core suites, Elixir 1.19.5 / OTP 28.5, both schema providers | 1,621 tests per run; 0 failures, 3 excluded |
-| Fresh HTTP runner, Node 24.21.0 / Elixir 1.19.5 / OTP 28.5 | 44 passed: 22 Apollo and 22 Relay |
+| Clean full core suites, Elixir 1.20.3 / OTP 29.0.5, both schema providers | 1,629 passed per run; 3 excluded |
+| Clean full core suites, Elixir 1.19.5 / OTP 28.5, both schema providers | 1,629 tests per run; 0 failures, 3 excluded |
+| Fresh HTTP runner, Node 24.21.0 / Elixir 1.19.5 / OTP 28.5 | 46 passed: 22 Apollo and 24 Relay |
 | `mix dialyzer` | 0 errors; no new suppressions |
 | Root and harness formatting, `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
