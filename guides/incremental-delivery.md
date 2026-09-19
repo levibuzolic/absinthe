@@ -31,7 +31,7 @@ defmodule MyApp.Schema do
 end
 ```
 
-The import exposes these definitions through introspection:
+The import exposes these definitions through introspection and SDL export:
 
 ```graphql
 directive @defer(if: Boolean! = true, label: String)
@@ -190,7 +190,11 @@ response paths and source locations.
 
 Root mutation and subscription fields cannot be streamed, and root mutation or
 subscription fragments cannot be deferred. Nested mutation selections support
-incremental delivery while root mutations retain serial execution.
+incremental delivery while root mutations retain serial execution. Each mutation
+root and its eager child selections finish, including suspended middleware,
+before the next root starts. Deferred children run when subsequent results are
+consumed and do not delay later mutation roots. Batch and Dataloader work can
+batch within the current eager subtree, without starting later mutation roots.
 
 Subscriptions cannot incrementally deliver events. A subscription may contain
 directives that can be disabled, such as `if: false` or `if: $variable`. Static
