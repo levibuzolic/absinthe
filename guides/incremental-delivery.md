@@ -226,6 +226,9 @@ disconnects. Handle exceptions raised while enumerating the continuation as
 request or transport failures and stop consuming. Set bounds appropriate for
 your service: the core retains the source list until its continuation is
 consumed or discarded, and Relay formatting retains accumulated snapshots.
+Stopping pulls does not cancel a resolver already running or detached
+resolver-owned work; cancellation must be handled by the transport or
+application.
 
 The eager `Absinthe.run/3` API remains available for clients and transports that
 accept only ordinary GraphQL responses. Do not pass an `Absinthe.Incremental`
@@ -312,7 +315,10 @@ these integration points.
 The formatter supplies accumulated snapshots for completed deferred fragments,
 including parent fragments with no independent work after deduplication. This
 preserves shared fields, object identity, abstract types, and deferred selections
-inside eager objects and lists. Streamed objects use individual indexed patches.
+inside eager objects and lists. Snapshots include the fragment's known response
+fields while retaining whole linked values. Reused fragments whose fields were
+already collected retain a broader snapshot so shared data and abstract-type
+discriminators remain available. Streamed objects use individual indexed patches.
 Relay's `@stream_connection` compiler transform produces supported edges
 `@stream` and page-info `@defer` selections, including cursor pagination.
 

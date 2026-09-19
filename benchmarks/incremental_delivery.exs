@@ -8,6 +8,7 @@ defmodule IncrementalDeliveryBenchmark.Schema do
 
   query do
     field :rows, list_of(:row)
+    field :value, :integer
   end
 
   object :row do
@@ -29,32 +30,50 @@ queries = [
   }
 ]
 
-measure = fn query, rows ->
+top_level_data_fields = fn payload ->
+  Enum.reduce([payload | Map.get(payload, :incremental, [])], 0, fn
+    %{data: data}, count when is_map(data) -> count + map_size(data)
+    _, count -> count
+  end)
+end
+
+measure = fn query, root_value, options ->
   {initial, {:ok, response}} =
     :timer.tc(fn ->
-      Absinthe.run_incremental(query, IncrementalDeliveryBenchmark.Schema,
-        root_value: %{rows: rows}
+      Absinthe.run_incremental(
+        query,
+        IncrementalDeliveryBenchmark.Schema,
+        Keyword.put(options, :root_value, root_value)
       )
     end)
 
-  {subsequent, _count} = :timer.tc(fn -> Enum.count(response.subsequent_results) end)
-  {initial, subsequent}
+  {subsequent, fields} =
+    :timer.tc(fn ->
+      Enum.reduce(response.subsequent_results, top_level_data_fields.(response.initial_result), fn
+        payload, count -> count + top_level_data_fields.(payload)
+      end)
+    end)
+
+  {initial, subsequent, fields}
 end
 
-median = fn query, rows ->
-  measure.(query, rows)
-  samples = for _ <- 1..5, do: measure.(query, rows)
+median = fn query, root_value, options ->
+  measure.(query, root_value, options)
+  samples = for _ <- 1..5, do: measure.(query, root_value, options)
 
-  for index <- [0, 1] do
-    samples |> Enum.map(&elem(&1, index)) |> Enum.sort() |> Enum.at(2) |> Kernel./(1_000)
-  end
+  times =
+    for index <- [0, 1] do
+      samples |> Enum.map(&elem(&1, index)) |> Enum.sort() |> Enum.at(2) |> Kernel./(1_000)
+    end
+
+  {times, elem(hd(samples), 2)}
 end
 
 IO.puts("scenario | rows | initial ms | continuation ms")
 
 for {name, query} <- queries, count <- [500, 1_000, 2_000, 4_000] do
   rows = Enum.map(1..count, &%{id: &1, value: &1, extra: &1})
-  medians = median.(query, rows)
+  {medians, _fields} = median.(query, %{rows: rows}, [])
 
   IO.puts(Enum.join([name, count | Enum.map(medians, &Float.round(&1, 2))], " | "))
 end
@@ -67,11 +86,35 @@ end
 IO.puts("scenario | aliased fields | initial ms | continuation ms")
 
 for field_count <- [10, 100, 500] do
-  medians = median.(ast_query.(field_count), [%{id: 1, value: 1, extra: 1}])
+  {medians, _fields} =
+    median.(ast_query.(field_count), %{rows: [%{id: 1, value: 1, extra: 1}]}, [])
 
   IO.puts(
     Enum.join(
       ["AST aliases", field_count | Enum.map(medians, &Float.round(&1, 2))],
+      " | "
+    )
+  )
+end
+
+sibling_query = fn group_count ->
+  groups =
+    for index <- 1..group_count do
+      "... @defer(label: \"value#{index}\") { value#{index}: value }"
+    end
+
+  "{ #{Enum.join(groups, " ")} }"
+end
+
+IO.puts("format | scenario | groups | continuation ms | delivered top-level data fields")
+
+for format <- [:draft, :relay], group_count <- [10, 100, 500] do
+  {[_initial, continuation], fields} =
+    median.(sibling_query.(group_count), %{value: 1}, incremental_format: format)
+
+  IO.puts(
+    Enum.join(
+      [format, "root sibling @defer", group_count, Float.round(continuation, 2), fields],
       " | "
     )
   )
