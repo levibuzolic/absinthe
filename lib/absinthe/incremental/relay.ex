@@ -137,19 +137,31 @@ defmodule Absinthe.Incremental.Relay do
     else
       group = state.blueprint.execution.incremental.groups[ref]
       {packets, state} = defer_packets(group.parent, packets, state)
+      data = state.data |> fetch(group.path) |> select_fields(group.response_keys) |> restore()
+
+      errors =
+        state.errors
+        |> relative_errors(group.path)
+        |> Enum.filter(fn
+          %{path: [key | _]} -> Map.has_key?(data, key)
+          _ -> true
+        end)
 
       packet =
         %{
-          data: restore(fetch(state.data, group.path)),
+          data: data,
           path: group.path,
           label: Map.get(group, :label)
         }
-        |> with_errors(relative_errors(state.errors, group.path))
+        |> with_errors(errors)
         |> continuing()
 
       {[packet | packets], %{state | sent: MapSet.put(state.sent, ref)}}
     end
   end
+
+  defp select_fields(data, :all), do: data
+  defp select_fields(data, keys), do: Map.take(data, MapSet.to_list(keys))
 
   # Index each response-path prefix so a deferred fragment reads only its own
   # errors. Sequence numbers preserve order when merging errors without paths.

@@ -7,7 +7,13 @@ defmodule Absinthe.Incremental.Planner do
   def project(parent, parent_type, source, path, res) do
     details = Map.get(parent, :field_details) || [{parent, nil}]
 
-    initial = %{fields: %{}, order: [], visited: %{}, state: res.incremental}
+    initial = %{
+      fields: %{},
+      order: [],
+      visited: %{},
+      response_path: State.path(path),
+      state: res.incremental
+    }
 
     collected =
       Enum.reduce(details, initial, fn {field, usage}, acc ->
@@ -111,7 +117,8 @@ defmodule Absinthe.Incremental.Planner do
     key = field.alias || field.name
     order = if Map.has_key?(acc.fields, key), do: acc.order, else: [key | acc.order]
     fields = Map.update(acc.fields, key, [{field, usage}], &[{field, usage} | &1])
-    %{acc | fields: fields, order: order}
+    state = record_response_key(acc.state, usage, acc.response_path, key)
+    %{acc | fields: fields, order: order, state: state}
   end
 
   defp collect_selection(
@@ -148,13 +155,39 @@ defmodule Absinthe.Incremental.Planner do
 
     visited = Map.get(acc.visited, name, MapSet.new())
 
-    if applies?(fragment.type_condition, type, res.schema) and
-         not MapSet.member?(visited, nil) and not MapSet.member?(visited, token) do
-      acc = %{acc | visited: Map.put(acc.visited, name, MapSet.put(visited, token))}
-      {usage, acc} = defer(spread, usage, path, res, acc)
-      collect(fragment.selections, usage, type, path, res, acc)
+    cond do
+      not applies?(fragment.type_condition, type, res.schema) ->
+        acc
+
+      MapSet.member?(visited, nil) or MapSet.member?(visited, token) ->
+        # A reused fragment's fields are not visited again. Preserve the full
+        # snapshot rather than infer an incomplete projection (which can omit
+        # Relay's abstract-type discriminators as well as ordinary fields).
+        state = record_response_key(acc.state, usage, acc.response_path, :all)
+        %{acc | state: state}
+
+      true ->
+        acc = %{acc | visited: Map.put(acc.visited, name, MapSet.put(visited, token))}
+        {usage, acc} = defer(spread, usage, path, res, acc)
+        collect(fragment.selections, usage, type, path, res, acc)
+    end
+  end
+
+  defp record_response_key(state, nil, _path, _key), do: state
+
+  defp record_response_key(state, usage, path, key) do
+    group = state.groups[usage]
+
+    if group.path == path do
+      keys =
+        if key == :all or group.response_keys == :all,
+          do: :all,
+          else: MapSet.put(group.response_keys, key)
+
+      state = put_in(state.groups[usage].response_keys, keys)
+      record_response_key(state, group.parent, path, key)
     else
-      acc
+      state
     end
   end
 

@@ -268,3 +268,25 @@ export const nodeB = graphql`
     }
   }
 `;
+
+export const projection = graphql`
+  query RelayCasesProjectionQuery {
+    entity: person {
+      id
+      __typename
+      ...RelayCases_projectionCommon
+      ...RelayCases_projectionDetails @defer
+    }
+  }
+`;
+export const projectionCommon = graphql`
+  fragment RelayCases_projectionCommon on Node {
+    id
+  }
+`;
+export const projectionDetails = graphql`
+  fragment RelayCases_projectionDetails on Person {
+    ...RelayCases_projectionCommon
+    age
+  }
+`;

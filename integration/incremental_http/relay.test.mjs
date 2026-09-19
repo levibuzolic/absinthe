@@ -25,6 +25,7 @@ import NullEdgeConnectionQuery from "./relay/__generated__/RelayConnectionQueryN
 import NullErrorQuery from "./relay/__generated__/RelayCasesNullErrorQuery.graphql.js";
 import NullItemQuery from "./relay/__generated__/RelayCasesNullItemQuery.graphql.js";
 import NullNestedQuery from "./relay/__generated__/RelayCasesNullNestedQuery.graphql.js";
+import ProjectionQuery from "./relay/__generated__/RelayCasesProjectionQuery.graphql.js";
 import SharedQuery from "./relay/__generated__/RelayCasesSharedQuery.graphql.js";
 import SlowQuery from "./relay/__generated__/RelayCasesSlowQuery.graphql.js";
 import StreamErrorsQuery from "./relay/__generated__/RelayCasesStreamErrorsQuery.graphql.js";
@@ -49,6 +50,8 @@ import NodeA from "./relay/__generated__/RelayCases_nodeA.graphql.js";
 import NodeB from "./relay/__generated__/RelayCases_nodeB.graphql.js";
 import Outer from "./relay/__generated__/RelayCases_outer.graphql.js";
 import OuterPath from "./relay/__generated__/RelayCases_outerPath.graphql.js";
+import ProjectionCommon from "./relay/__generated__/RelayCases_projectionCommon.graphql.js";
+import ProjectionDetails from "./relay/__generated__/RelayCases_projectionDetails.graphql.js";
 import SharedA from "./relay/__generated__/RelayCases_a.graphql.js";
 import SharedB from "./relay/__generated__/RelayCases_b.graphql.js";
 
@@ -662,6 +665,38 @@ test("shared abstract fragments retain Relay type discriminators and eager recor
     paths(client.id).filter(
       (path) => JSON.stringify(path) === '["entity","name"]',
     ).length,
+    1,
+  );
+});
+
+test("a reused eager fragment retains its abstract discriminator in a deferred snapshot", async (t) => {
+  const client = observeRelay(server, t, ProjectionQuery);
+  const initial = await client.initial();
+  assert.deepEqual(
+    client.fragment(ProjectionCommon, initial.data.entity).data,
+    {
+      id: "1",
+    },
+  );
+  assert.equal(
+    client.fragment(ProjectionDetails, initial.data.entity).isMissingData,
+    true,
+  );
+  assert.ok(!paths(client.id).some((path) => path.at(-1) === "age"));
+
+  const final = await client.finish();
+  const details = client.fragment(ProjectionDetails, final.data.entity);
+  assert.equal(details.isMissingData, false);
+  assert.equal(details.data.age, 37);
+  const common = client.fragment(ProjectionCommon, details.data);
+  assert.equal(common.isMissingData, false);
+  assert.deepEqual(common.data, { id: "1" });
+  assert.equal(
+    client.raw.find((payload) => payload.label).data.__isNode,
+    "Person",
+  );
+  assert.equal(
+    paths(client.id).filter((path) => path.at(-1) === "id").length,
     1,
   );
 });
