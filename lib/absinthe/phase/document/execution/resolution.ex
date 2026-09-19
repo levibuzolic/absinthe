@@ -142,9 +142,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   defp do_perform_resolution(%{result: %{fields: nil}} = exec, operation, res, _options) do
     {result, res} =
-      exec.result
-      |> walk_result(operation, operation.schema_node, res, [operation])
-      |> propagate_null_trimming
+      walk_result(exec.result, operation, operation.schema_node, res, [operation])
 
     exec = update_persisted_fields(exec, res)
 
@@ -266,7 +264,6 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         {node, false}
 
       {values, true} ->
-        values = Enum.map(values, &do_propagate_null_trimming/1)
         {do_propagate_null_trimming(%{node | values: values}), true}
     end
   end
@@ -289,7 +286,8 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   @doc """
   This function builds the results under a given node. Any suspended fields
   encountered leave a `%Result.Pending{}` placeholder and are accumulated on
-  the resolution struct's `:pending` list.
+  the resolution struct's `:pending` list. Each completed container propagates
+  nulls from its children before returning to its parent.
   """
   # Note: `root_value` must stay on the built object even though this phase no
   # longer needs it — downstream result phases can consume it (e.g.
@@ -298,7 +296,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   def walk_result(%{fields: nil} = result, bp_node, _schema_type, res, path) do
     case resolve_fields(bp_node, res, result.root_value, path) do
       {:ok, fields, res} ->
-        {%{result | fields: fields}, res}
+        {do_propagate_null_trimming(%{result | fields: fields}), res}
 
       {:error, directive} ->
         error =
@@ -336,7 +334,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   def walk_result(%{values: values} = result, bp_node, schema_type, res, path) do
     %Type.List{of_type: inner_type} = Type.unwrap_non_null(schema_type)
     {values, res} = walk_results(values, bp_node, inner_type, res, [0 | path], [])
-    propagate_null_trimming({%{result | values: values}, res})
+    {do_propagate_null_trimming(%{result | values: values}), res}
   end
 
   # walk list results
@@ -397,22 +395,19 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     {fields, res} =
       do_resolve_fields(frame.fields, res, frame.source, frame.parent_type, frame.path, [])
 
-    {%Result.Object{root_value: frame.source, emitter: frame.emitter, fields: fields}, res}
-    |> propagate_null_trimming()
+    result = %Result.Object{root_value: frame.source, emitter: frame.emitter, fields: fields}
+    {do_propagate_null_trimming(result), res}
   end
 
   defp resolve_frame(%{kind: :stream, values: [value | _]} = frame, res) do
     path = [frame.index | frame.path]
     res = %{res | delivery: MapSet.new(), path: path}
-    errors = maybe_add_non_null_error([], value, frame.item_type)
     emitter = frame.emitter
     emitter = put_in(emitter.schema_node.type, frame.item_type)
 
     value
     |> to_result(emitter, frame.item_type, frame.extensions)
-    |> add_errors(errors, &put_result_error_value(&1, &2, emitter, frame.source, path))
     |> walk_result(emitter, frame.item_type, res, path)
-    |> propagate_null_trimming()
   end
 
   defp get_return_type(%{schema_node: %Type.Field{type: type}}) do
@@ -476,16 +471,10 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
       _ ->
         value = Map.get(source, key)
-        errors = maybe_add_non_null_error([], value, full_type)
 
         value
         |> to_result(emitter, full_type, res.extensions)
-        |> add_errors(
-          Enum.reverse(errors),
-          &put_result_error_value(&1, &2, emitter, source, path)
-        )
         |> walk_result(emitter, full_type, res, path)
-        |> propagate_null_trimming
     end
   end
 
@@ -609,13 +598,11 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
     {value, res, stream_errors} = Planner.prepare_stream(value, bp_field, res)
     errors = errors ++ stream_errors
-    errors = maybe_add_non_null_error(errors, value, full_type)
 
     value
     |> to_result(bp_field, full_type, extensions)
     |> add_errors(Enum.reverse(errors), &put_result_error_value(&1, &2, bp_field, source, path))
     |> walk_result(bp_field, full_type, res, path)
-    |> propagate_null_trimming
   end
 
   defp prepared_emitter(
@@ -653,43 +640,14 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     end
   end
 
-  defp maybe_add_non_null_error([], nil, %Type.NonNull{}) do
-    ["Cannot return null for non-nullable field"]
-  end
-
-  defp maybe_add_non_null_error(errors, _, _) do
-    errors
-  end
-
-  defp propagate_null_trimming({%{values: values} = node, res}) do
-    # Only rebuild the list when something actually needs to be trimmed; in the
-    # common all-good case this avoids re-allocating the values list (and a
-    # copy of the node) just to put back identical elements.
-    if Enum.any?(values, &needs_trimming?/1) do
-      values = Enum.map(values, &do_propagate_null_trimming/1)
-      node = %{node | values: values}
-      {do_propagate_null_trimming(node), res}
-    else
-      {node, res}
-    end
-  end
-
-  defp propagate_null_trimming({node, res}) do
-    {do_propagate_null_trimming(node), res}
-  end
-
   defp do_propagate_null_trimming(node) do
     if find_bad_child(node) do
-      bp_field = node.emitter
-
-      full_type =
-        with %{type: type} <- bp_field.schema_node do
-          type
-        end
-
-      nil
-      |> to_result(bp_field, full_type, node.extensions)
-      |> Map.put(:errors, result_errors(node))
+      %Result.Leaf{
+        emitter: node.emitter,
+        value: nil,
+        extensions: node.extensions,
+        errors: result_errors(node)
+      }
     else
       node
     end
@@ -702,12 +660,6 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     do: errors ++ Enum.flat_map(values, &result_errors/1)
 
   defp result_errors(%{errors: errors}), do: errors
-
-  # A list element needs the trimming pass if it must be nulled out itself
-  # (a bad child of its own) or if it violates the list's element nullability.
-  defp needs_trimming?(element) do
-    find_bad_child(element) || non_null_violation?(element)
-  end
 
   defp find_bad_child(%{fields: fields}) do
     Enum.find(fields, &non_null_violation?/1)

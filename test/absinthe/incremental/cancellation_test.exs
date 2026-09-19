@@ -14,6 +14,13 @@ defmodule Absinthe.Incremental.CancellationTest do
       field :child, :node
       field :children, list_of(:node)
 
+      field :observed_child, :node do
+        resolve fn source, _, %{context: %{test_pid: pid}} ->
+          send(pid, :resolved_shared_child)
+          {:ok, source.child}
+        end
+      end
+
       field :failure, non_null(:string) do
         resolve fn _, _ -> {:error, "failed"} end
       end
@@ -97,6 +104,61 @@ defmodule Absinthe.Incremental.CancellationTest do
                &Map.has_key?(&1, :errors)
              )
 
+    refute_received :resolved_hidden
+  end
+
+  test "a published three-owner frame keeps its nested stream when another owner fails" do
+    query = """
+    { node {
+      ... @defer(label: "a") { ...Shared }
+      ... @defer(label: "b") { ...Shared private: value failure }
+      ... @defer(label: "c") { ...Shared value }
+    } }
+    fragment Shared on Node {
+      child: observedChild { children @stream(label: "stream") { hidden } }
+    }
+    """
+
+    assert {:ok, result} =
+             Absinthe.run_incremental(query, Schema,
+               root_value: %{node: %{value: 9, child: %{children: [%{}, %{}]}}},
+               context: %{test_pid: self()}
+             )
+
+    refute_received :resolved_shared_child
+    refute_received :resolved_hidden
+
+    assert {%{
+              "node" => %{
+                "child" => %{"children" => [%{"hidden" => "hidden"}, %{"hidden" => "hidden"}]},
+                "value" => 9
+              }
+            }, [initial, shared, failed | later]} = Incremental.consume(result)
+
+    assert [%{id: a, label: "a"}, %{id: b, label: "b"}, %{id: c, label: "c"}] =
+             initial.pending
+
+    assert shared.incremental == [%{id: a, data: %{"child" => %{"children" => []}}}]
+    assert shared.completed == [%{id: a}]
+    assert [%{id: stream, label: "stream", path: ["node", "child", "children"]}] = shared.pending
+
+    assert [%{id: ^b, errors: [%{message: "failed", path: ["node", "failure"]}]}] =
+             failed.completed
+
+    refute Map.has_key?(failed, :incremental)
+
+    assert [%{id: ^c}, %{id: ^stream}] = Enum.flat_map(later, &Map.get(&1, :completed, []))
+
+    assert [
+             %{id: ^c, data: %{"value" => 9}},
+             %{id: ^stream, items: [%{"hidden" => "hidden"}]},
+             %{id: ^stream, items: [%{"hidden" => "hidden"}]}
+           ] = Enum.flat_map(later, &Map.get(&1, :incremental, []))
+
+    assert_received :resolved_shared_child
+    refute_received :resolved_shared_child
+    assert_received :resolved_hidden
+    assert_received :resolved_hidden
     refute_received :resolved_hidden
   end
 

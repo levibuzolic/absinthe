@@ -7,7 +7,6 @@ defmodule Absinthe.Incremental.State do
             groups: %{},
             group_ids: %{},
             unannounced: [],
-            next_id: 0,
             next_frame: 0,
             frame: nil,
             waiting: %{},
@@ -30,7 +29,7 @@ defmodule Absinthe.Incremental.State do
           parent: nil,
           owner: owner,
           jobs: MapSet.new(),
-          buffered: []
+          buffered: MapSet.new()
         },
         attributes
       )
@@ -84,8 +83,7 @@ defmodule Absinthe.Incremental.State do
       | groups: Map.put(state.groups, ref, %{group | id: id}),
         group_ids: Map.put(state.group_ids, id, ref),
         ready: ready,
-        completion_candidates: candidates,
-        next_id: state.next_id + 1
+        completion_candidates: candidates
     }
   end
 
@@ -117,16 +115,34 @@ defmodule Absinthe.Incremental.State do
   def buffer(state, frame, result) do
     groups =
       Enum.reduce(frame.groups, state.groups, fn ref, groups ->
-        Map.update!(groups, ref, &%{&1 | buffered: [frame.ref | &1.buffered]})
+        Map.update!(groups, ref, &%{&1 | buffered: MapSet.put(&1.buffered, frame.ref)})
       end)
 
     %{state | groups: groups, buffered: Map.put(state.buffered, frame.ref, {frame, result})}
   end
 
+  # Owner memberships contain only live buffers. Removing a buffer is separate
+  # from publishing it: discarded data must not wake its dependent groups.
+  def pop_buffer(state, ref) do
+    {{frame, result}, buffered} = Map.pop!(state.buffered, ref)
+
+    groups =
+      Enum.reduce(frame.groups, state.groups, fn owner, groups ->
+        Map.update!(groups, owner, &%{&1 | buffered: MapSet.delete(&1.buffered, ref)})
+      end)
+
+    {{frame, result}, %{state | groups: groups, buffered: buffered}}
+  end
+
+  def buffered_refs(state, groups) do
+    Enum.reduce(groups, MapSet.new(), fn ref, refs ->
+      MapSet.union(refs, state.groups[ref].buffered)
+    end)
+  end
+
   def has_work?(state, ref), do: MapSet.size(state.groups[ref].jobs) > 0
 
-  def has_buffered?(state, ref),
-    do: Enum.any?(state.groups[ref].buffered, &Map.has_key?(state.buffered, &1))
+  def has_buffered?(state, ref), do: MapSet.size(state.groups[ref].buffered) > 0
 
   def wait_for(state, dependency, ref) do
     %{state | waiting: Map.update(state.waiting, dependency, [ref], &[ref | &1])}
