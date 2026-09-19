@@ -357,8 +357,8 @@ negotiation parameter, not a standardized GraphQL HTTP protocol. Production
 transports must explicitly negotiate and select `incremental_format: :relay`;
 the core option does not configure Absinthe Plug or a client network layer.
 The harness runs unmodified Relay 21.0.1 with an explicitly patched meros 1.3.2
-browser parser. Its `integration/incremental_http/meros-fix/README.md` records
-the source and runtime fix.
+browser parser. Its `integration/incremental_http/README.md` documents
+the runtime patch and its source revision.
 Stock meros can skip boundaries spanning Fetch chunks; deterministic parser
 regressions cover that defect separately from the HTTP tests.
 

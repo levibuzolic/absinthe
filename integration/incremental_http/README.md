@@ -58,13 +58,14 @@ node --test --test-concurrency=1 --test-timeout=30000 \
   --test-name-pattern='Apollo reconstructs nested|Apollo cancellation' client.test.mjs
 ```
 
-The [Apollo source patch and regression tests](apollo-fixes/source.patch) apply to
-Apollo revision `4bb0b7ad64e5a928bddab32a7f398c911f24579d`. The runtime patch was
-built from those source changes for both ESM and CommonJS. It initializes inner
+The runtime patch updates both ESM and CommonJS, based on Apollo source revision
+[`4bb0b7ad64e5a928bddab32a7f398c911f24579d`](https://github.com/apollographql/apollo-client/tree/4bb0b7ad64e5a928bddab32a7f398c911f24579d).
+It initializes inner
 positions from incoming data at the full response path, including nonzero
 prefixes and sibling lists; cached array tails cannot shift insertion indices.
 It also awaits reader cancellation so the HTTP link owns rejection handling.
-Unexpected cleanup errors still propagate. See [source verification](apollo-fixes/README.md).
+Unexpected cleanup errors still propagate. Source maps remain those of the
+released package.
 
 The HTTP regressions require correct final data and normalized cache contents
 for inner prefixes zero and one against both Absinthe and GraphQL.js. Cancellation
@@ -76,14 +77,28 @@ worker termination, and exact resolver traces.
 
 Stock `meros` **1.3.2** skips a boundary split across Fetch chunks when the
 second chunk also contains another complete boundary. The runner explicitly
-applies a [local browser parser fix](meros-fix/README.md) that searches the
+applies a [local browser parser fix](patches/meros+1.3.2.patch) that searches the
 accumulated buffer in order. **Relay 21.0.1 itself is unmodified**, but its
 network parser includes this unreleased fix. There is no published fixed
 meros version as of 2026-09-19.
 
+The patch updates the published browser ESM and CommonJS modules, based on
+source revision
+[`87ed69fe97f5a250ee6e8bec1a9ba458e16655f9`](https://github.com/maraisr/meros/tree/87ed69fe97f5a250ee6e8bec1a9ba458e16655f9).
+The Node-specific parser is unused and unchanged.
+
 Deterministic parser regressions cover every two-chunk byte split, single-byte
 chunks and a coalesced body, including UTF-8, in both ESM and CommonJS. These
 checks complement HTTP write fragmentation, which cannot control Fetch chunks.
+
+To reproduce against the stock parser and then verify the fix:
+
+```sh
+npm ci --ignore-scripts
+node --test multipart.test.mjs # both module-format regressions fail
+npm run client:patch
+node --test multipart.test.mjs # both pass
+```
 
 ## What the HTTP tests establish
 
@@ -148,15 +163,8 @@ unsupported-only choices. The Relay negotiation parameter is application-defined
 
 ## Verification limits
 
-The clean-install runner passed **56 tests** locally on 2026-09-19: **29 Relay/mixed-client
-HTTP**, **25 locally patched Apollo HTTP**, and **2 deterministic multipart-parser
-tests**, with no failures or skips, using the pinned runtimes. Compilation and
-formatting checks also passed.
-
 The GitHub Actions workflow runs this harness for pull requests and pushes to
-main. Local verification does not imply that a remote CI run has completed.
-Core test results across both schema providers and Elixir versions are recorded
-in the [design and verification notes](../../INCREMENTAL_DELIVERY_PLAN.md).
+main.
 
 This suite does not certify a production Absinthe Plug adapter, browsers,
 reverse proxies, compression, HTTP/2, SSE, WebSockets or general socket
