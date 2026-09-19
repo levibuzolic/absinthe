@@ -92,7 +92,6 @@ defmodule Absinthe.Incremental.Planner do
                 | field_details: Enum.map(field.field_details, fn {node, _} -> {node, nil} end)
               },
               item_type: item_type,
-              source: res.source,
               extensions: res.extensions
             })
 
