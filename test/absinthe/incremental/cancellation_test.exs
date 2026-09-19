@@ -128,14 +128,15 @@ defmodule Absinthe.Incremental.CancellationTest do
     refute_received :resolved_shared_child
     refute_received :resolved_hidden
 
-    assert {%{
-              "node" => %{
-                "child" => %{"children" => [%{"hidden" => "hidden"}, %{"hidden" => "hidden"}]},
-                "value" => 9
-              }
-            },
-            [initial, shared, failed | later]} =
+    assert {data, [initial, shared, failed | later]} =
              Incremental.consume(result, expect_errors: true)
+
+    assert data == %{
+             "node" => %{
+               "child" => %{"children" => [%{"hidden" => "hidden"}, %{"hidden" => "hidden"}]},
+               "value" => 9
+             }
+           }
 
     assert [%{id: a, label: "a"}, %{id: b, label: "b"}, %{id: c, label: "c"}] =
              initial.pending
