@@ -53,6 +53,9 @@ defmodule Absinthe.Resolution do
           acc: %{any => any},
           extensions: %{any => any},
           arguments: arguments,
+          incremental: nil | Absinthe.Incremental.State.t(),
+          incremental_subscription: boolean,
+          delivery: MapSet.t(Absinthe.Incremental.State.group_ref()),
           fragments: [Absinthe.Blueprint.Document.Fragment.Named.t()]
         }
 
@@ -77,7 +80,10 @@ defmodule Absinthe.Resolution do
     fields_cache: %{},
     # Internal to the resolution phase: suspended fields collected during the
     # current pass, as `{ref, %Absinthe.Resolution{}}` in reverse walk order.
-    pending: []
+    pending: [],
+    incremental: nil,
+    incremental_subscription: false,
+    delivery: MapSet.new()
   ]
 
   def resolver_spec(fun) do

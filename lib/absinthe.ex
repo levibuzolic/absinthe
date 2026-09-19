@@ -95,7 +95,8 @@ defmodule Absinthe do
           analyze_complexity: boolean,
           variables: %{optional(String.t()) => any()},
           max_complexity: non_neg_integer | :infinity,
-          pipeline_modifier: pipeline_modifier_fun()
+          pipeline_modifier: pipeline_modifier_fun(),
+          incremental_format: :graphql_draft | :relay
         ]
 
   @type run_result :: {:ok, result_t} | {:error, String.t()}
@@ -136,6 +137,65 @@ defmodule Absinthe do
         ) :: result_t | no_return
   def run!(input, schema, options \\ []) do
     case run(input, schema, options) do
+      {:ok, result} -> result
+      {:error, err} -> raise ExecutionError, message: err
+    end
+  end
+
+  @doc """
+  Evaluates a document with support for incremental delivery.
+
+  The schema must explicitly import
+  `Absinthe.Type.BuiltIns.IncrementalDirectives` to expose `@defer` and `@stream`.
+  This API accepts the same options as `run/3`, plus `:incremental_format`:
+
+  * `:graphql_draft` (default) returns the GraphQL proposal #1110 ID-based
+    protocol described in `Absinthe.Incremental`, supported by Apollo's
+    `GraphQL17Alpha9Handler`.
+  * `:relay` returns labeled responses for Relay-compiled operations, with
+    indexed stream items and `extensions.is_final` completion markers.
+    Configure Relay's environment with `deferDeduplicatedFields: true` and an
+    observable network layer that forwards the incremental responses.
+
+  When execution leaves deferred fields or streamed list items, the result is
+  an `Absinthe.Incremental` struct. Its `initial_result` is ready to deliver;
+  enumerating `subsequent_results` resolves and delivers the remaining work on
+  demand. Consume that enumerable once, in the request process. Stopping
+  enumeration leaves subsequent work unexecuted.
+
+  Documents with no effective incremental work, including invalid documents,
+  return ordinary result maps. In the default format these match `run/3`;
+  Relay format adds its final marker and `hasNext: false`. `run/3` itself retains
+  its single-result behavior and executes imported incremental directives eagerly.
+
+  A transport adapter must explicitly support the selected payload format.
+  Relay format retains a snapshot of delivered data for fragment normalization.
+  A failed incremental boundary terminates the Relay operation, and nullable
+  streamed items require a final full-response replay. See the incremental
+  delivery guide for these compatibility details and the HTTP client tests.
+  """
+  @spec run_incremental(
+          binary | Absinthe.Language.Source.t() | Absinthe.Language.Document.t(),
+          Absinthe.Schema.t(),
+          run_opts
+        ) :: {:ok, result_t | Absinthe.Incremental.t()} | {:error, String.t()}
+  def run_incremental(document, schema, options \\ []) do
+    Absinthe.Incremental.run(document, schema, options)
+  end
+
+  @doc """
+  Like `run_incremental/3`, but raises `Absinthe.ExecutionError` on a pipeline error.
+
+  GraphQL validation and execution errors remain in the returned response,
+  matching `run!/3`.
+  """
+  @spec run_incremental!(
+          binary | Absinthe.Language.Source.t() | Absinthe.Language.Document.t(),
+          Absinthe.Schema.t(),
+          run_opts
+        ) :: result_t | Absinthe.Incremental.t() | no_return
+  def run_incremental!(document, schema, options \\ []) do
+    case run_incremental(document, schema, options) do
       {:ok, result} -> result
       {:error, err} -> raise ExecutionError, message: err
     end

@@ -19,6 +19,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   alias Absinthe.{Blueprint, Type, Phase}
   alias Blueprint.{Result, Execution}
+  alias Absinthe.Incremental.{Directives, Planner}
 
   alias Absinthe.Phase
   use Absinthe.Phase
@@ -36,18 +37,32 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
     blueprint = %{bp_root | execution: execution}
 
-    if Keyword.get(options, :plugin_callbacks, true) do
-      bp_root.schema.plugins()
-      |> Absinthe.Plugin.pipeline(execution)
-      |> case do
-        [] ->
-          {:ok, blueprint}
+    pipeline =
+      if Keyword.get(options, :plugin_callbacks, true),
+        do: Absinthe.Plugin.pipeline(bp_root.schema.plugins(), execution),
+        else: []
 
-        pipeline ->
-          {:insert, blueprint, pipeline}
+    pipeline =
+      if execution.mutation != nil do
+        pipeline =
+          Enum.map(pipeline, fn
+            __MODULE__ -> {__MODULE__, options}
+            phase -> phase
+          end)
+
+        # Resume options belong to that plugin phase. A new root starts with
+        # the original options so a callback-disabled resume cannot leak into it.
+        if execution.pending == [] and
+             not Enum.any?(pipeline, &match?({__MODULE__, _}, &1)),
+           do: pipeline ++ [{__MODULE__, execution.mutation.options}],
+           else: pipeline
+      else
+        pipeline
       end
-    else
-      {:ok, blueprint}
+
+    case pipeline do
+      [] -> {:ok, blueprint}
+      pipeline -> {:insert, blueprint, pipeline}
     end
   end
 
@@ -60,7 +75,17 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     exec = plugins |> run_callbacks(:before_resolution, exec, run_callbacks?)
 
     common =
-      Map.take(exec, [:adapter, :context, :acc, :root_value, :schema, :fragments, :fields_cache])
+      Map.take(exec, [
+        :adapter,
+        :context,
+        :acc,
+        :root_value,
+        :schema,
+        :fragments,
+        :fields_cache,
+        :incremental,
+        :incremental_subscription
+      ])
 
     res =
       %Absinthe.Resolution{
@@ -73,20 +98,51 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
       }
       |> Map.merge(common)
 
-    exec = do_perform_resolution(exec, operation, res)
+    exec = do_perform_resolution(exec, operation, res, options)
 
     exec = plugins |> run_callbacks(:after_resolution, exec, run_callbacks?)
 
-    maybe_substitute_pending(exec)
+    exec |> maybe_substitute_pending() |> finish_mutation()
   end
 
   # First run: expand the operation into the result tree. Suspended fields
   # leave placeholders in the tree and are collected into the pending pool.
-  defp do_perform_resolution(%{result: %{fields: nil}} = exec, operation, res) do
+  defp do_perform_resolution(
+         %{result: nil, incremental: %{frame: frame}} = exec,
+         _operation,
+         res,
+         _options
+       )
+       when not is_nil(frame) do
+    {result, res} = resolve_frame(frame, res)
+    exec = update_persisted_fields(exec, res)
+    %{exec | result: result, pending: Enum.reverse(res.pending)}
+  end
+
+  defp do_perform_resolution(
+         %{result: %{fields: nil}} = exec,
+         %{type: :mutation} = op,
+         res,
+         options
+       ) do
+    {:ok, fields, res} = project_fields(op, op.schema_node, exec.root_value, [op], res)
+
+    exec = %{
+      exec
+      | mutation: %{fields: fields, options: options},
+        result: %{exec.result | fields: []}
+    }
+
+    resolve_mutation_fields(exec, op, res)
+  end
+
+  defp do_perform_resolution(%{pending: [], mutation: %{}} = exec, op, res, _options) do
+    resolve_mutation_fields(exec, op, res)
+  end
+
+  defp do_perform_resolution(%{result: %{fields: nil}} = exec, operation, res, _options) do
     {result, res} =
-      exec.result
-      |> walk_result(operation, operation.schema_node, res, [operation])
-      |> propagate_null_trimming
+      walk_result(exec.result, operation, operation.schema_node, res, [operation])
 
     exec = update_persisted_fields(exec, res)
 
@@ -96,7 +152,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   # Subsequent runs: resume only the suspended fields in the pending pool. The
   # result tree already built in previous runs is left untouched; completed
   # results are stored by ref for the final substitution pass.
-  defp do_perform_resolution(exec, _operation, res) do
+  defp do_perform_resolution(exec, _operation, res, _options) do
     {pool, resolved, res} =
       Enum.reduce(exec.pending, {[], exec.resolved, res}, &resolve_pending/2)
 
@@ -104,6 +160,46 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
     %{exec | pending: Enum.reverse(pool, Enum.reverse(res.pending)), resolved: resolved}
   end
+
+  # Roots remain serial across every suspension in their eager subtree.
+  # Deferred children are queued separately and do not block the next root.
+  # Completed roots are accumulated in reverse order until the operation ends.
+  defp resolve_mutation_fields(%{mutation: %{fields: [field | fields]}} = exec, op, res) do
+    {value, res} = maybe_fast_resolve(field, res, exec.root_value, op.schema_node, [field, op])
+    result = %{exec.result | fields: [value | exec.result.fields]}
+    exec = %{exec | result: result, mutation: %{exec.mutation | fields: fields}}
+
+    cond do
+      res.pending != [] ->
+        exec = update_persisted_fields(exec, res)
+        %{exec | pending: Enum.reverse(res.pending)}
+
+      non_null_violation?(value) ->
+        exec = update_persisted_fields(exec, res)
+        %{exec | result: do_propagate_null_trimming(result), mutation: nil}
+
+      true ->
+        resolve_mutation_fields(exec, op, res)
+    end
+  end
+
+  defp resolve_mutation_fields(%{mutation: %{fields: []}} = exec, _op, res),
+    do: update_persisted_fields(exec, res)
+
+  defp finish_mutation(%{mutation: nil} = exec), do: exec
+  defp finish_mutation(%{pending: [_ | _]} = exec), do: exec
+
+  defp finish_mutation(%{result: %Result.Leaf{value: nil}} = exec),
+    do: %{exec | mutation: nil}
+
+  defp finish_mutation(%{mutation: %{fields: []}} = exec),
+    do: %{
+      exec
+      | result: %{exec.result | fields: Enum.reverse(exec.result.fields)},
+        mutation: nil
+    }
+
+  defp finish_mutation(exec), do: exec
 
   defp resolve_pending({ref, old_res}, {pool, resolved, res}) do
     res = update_persisted_fields(old_res, res)
@@ -128,9 +224,17 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     end
   end
 
-  # Once nothing remains suspended, splice the resolved results in over their
-  # placeholders. This is the only walk of the existing tree that re-running
-  # this phase performs, and it happens exactly once per document.
+  # Once the pending pool drains, substitute its results in one pass. Only
+  # the current mutation root can contain placeholders; previous roots are done.
+  defp maybe_substitute_pending(%{pending: [], mutation: %{}, resolved: resolved} = exec)
+       when map_size(resolved) > 0 do
+    [current | completed] = exec.result.fields
+    {current, _} = substitute(current, resolved)
+    result = %{exec.result | fields: [current | completed]}
+    result = if non_null_violation?(current), do: do_propagate_null_trimming(result), else: result
+    %{exec | result: result, resolved: %{}}
+  end
+
   defp maybe_substitute_pending(%{pending: [], resolved: resolved} = exec)
        when map_size(resolved) > 0 do
     {result, _} = substitute(exec.result, resolved)
@@ -160,7 +264,6 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         {node, false}
 
       {values, true} ->
-        values = Enum.map(values, &do_propagate_null_trimming/1)
         {do_propagate_null_trimming(%{node | values: values}), true}
     end
   end
@@ -183,15 +286,47 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   @doc """
   This function builds the results under a given node. Any suspended fields
   encountered leave a `%Result.Pending{}` placeholder and are accumulated on
-  the resolution struct's `:pending` list.
+  the resolution struct's `:pending` list. Each completed container propagates
+  nulls from its children before returning to its parent.
   """
   # Note: `root_value` must stay on the built object even though this phase no
   # longer needs it — downstream result phases can consume it (e.g.
   # Absinthe.Phoenix.Controller.Result returns raw source values for objects
   # without subselections and merges them for `@put`).
   def walk_result(%{fields: nil} = result, bp_node, _schema_type, res, path) do
-    {fields, res} = resolve_fields(bp_node, res, result.root_value, path)
-    {%{result | fields: fields}, res}
+    pending = res.pending
+
+    case resolve_fields(bp_node, res, result.root_value, path) do
+      {:ok, fields, res} ->
+        complete_container(%{result | fields: fields}, res, pending)
+
+      {:error, directive} ->
+        error =
+          error(
+            directive,
+            "The @defer directive is not supported on subscription operations.",
+            path,
+            %{}
+          )
+
+        {%Result.Leaf{
+           emitter: result.emitter,
+           value: nil,
+           extensions: result.extensions,
+           errors: [error]
+         }, res}
+    end
+  end
+
+  def walk_result(
+        %Result.Leaf{value: nil, errors: []} = result,
+        bp_node,
+        %Type.NonNull{},
+        res,
+        path
+      ) do
+    error = error(bp_node, "Cannot return null for non-nullable field", path, %{})
+    {%{result | errors: [error]}, res}
   end
 
   def walk_result(%Result.Leaf{} = result, _, _, res, _) do
@@ -199,8 +334,10 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   def walk_result(%{values: values} = result, bp_node, schema_type, res, path) do
-    {values, res} = walk_results(values, bp_node, schema_type, res, [0 | path], [])
-    {%{result | values: values}, res}
+    pending = res.pending
+    %Type.List{of_type: inner_type} = Type.unwrap_non_null(schema_type)
+    {values, res} = walk_results(values, bp_node, inner_type, res, [0 | path], [])
+    complete_container(%{result | values: values}, res, pending)
   end
 
   # walk list results
@@ -222,23 +359,59 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     |> get_concrete_type(source, res)
     |> case do
       nil ->
-        {[], res}
+        {:ok, [], res}
 
       parent_type ->
-        {fields, fields_cache} =
-          Absinthe.Resolution.Projector.project(
-            parent.selections,
-            parent_type,
-            path,
-            res.fields_cache,
-            res
-          )
-
-        res = %{res | fields_cache: fields_cache}
-
-        {values, res} = do_resolve_fields(fields, res, source, parent_type, path, [])
-        {values, %{res | path: path}}
+        with {:ok, fields, res} <- project_fields(parent, parent_type, source, path, res) do
+          {values, res} = do_resolve_fields(fields, res, source, parent_type, path, [])
+          {:ok, values, %{res | path: path}}
+        end
     end
+  end
+
+  defp project_fields(
+         parent,
+         parent_type,
+         _source,
+         path,
+         %{incremental: nil, incremental_subscription: false} = res
+       ) do
+    {fields, cache} =
+      Absinthe.Resolution.Projector.project(
+        parent.selections,
+        parent_type,
+        path,
+        res.fields_cache,
+        res
+      )
+
+    {:ok, fields, %{res | fields_cache: cache}}
+  end
+
+  defp project_fields(parent, parent_type, source, path, res) do
+    Planner.project(parent, parent_type, source, path, res)
+  end
+
+  defp resolve_frame(%{kind: :defer} = frame, res) do
+    pending = res.pending
+    res = %{res | delivery: frame.groups}
+
+    {fields, res} =
+      do_resolve_fields(frame.fields, res, frame.source, frame.parent_type, frame.path, [])
+
+    result = %Result.Object{root_value: frame.source, emitter: frame.emitter, fields: fields}
+    complete_container(result, res, pending)
+  end
+
+  defp resolve_frame(%{kind: :stream, values: [value | _]} = frame, res) do
+    path = [frame.index | frame.path]
+    res = %{res | delivery: MapSet.new(), path: path}
+    emitter = frame.emitter
+    emitter = put_in(emitter.schema_node.type, frame.item_type)
+
+    value
+    |> to_result(emitter, frame.item_type, frame.extensions)
+    |> walk_result(emitter, frame.item_type, res, path)
   end
 
   defp get_return_type(%{schema_node: %Type.Field{type: type}}) do
@@ -293,22 +466,19 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     {emitter, res} = prepared_emitter(res, field, parent_type, path)
     full_type = emitter.schema_node.type
 
-    case Type.unwrap(full_type) do
-      %struct{} when struct in [Type.Union, Type.Interface] ->
+    case {Directives.active(field, :stream), Type.unwrap(full_type)} do
+      {{_, _}, _} ->
+        resolve_field(field, res, source, parent_type, path)
+
+      {_, %struct{}} when struct in [Type.Union, Type.Interface] ->
         resolve_field(field, res, source, parent_type, path)
 
       _ ->
         value = Map.get(source, key)
-        errors = maybe_add_non_null_error([], value, full_type)
 
         value
         |> to_result(emitter, full_type, res.extensions)
-        |> add_errors(
-          Enum.reverse(errors),
-          &put_result_error_value(&1, &2, emitter, source, path)
-        )
         |> walk_result(emitter, full_type, res, path)
-        |> propagate_null_trimming
     end
   end
 
@@ -348,9 +518,17 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
          acc: acc,
          context: context,
          fields_cache: cache,
-         pending: pending
+         pending: pending,
+         incremental: incremental
        }) do
-    %{dest | acc: acc, context: context, fields_cache: cache, pending: pending}
+    %{
+      dest
+      | acc: acc,
+        context: context,
+        fields_cache: cache,
+        pending: pending,
+        incremental: incremental
+    }
   end
 
   defp build_resolution_struct(
@@ -409,11 +587,9 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
       errors: errors
     } = res
 
-    # Every element of a list ends up with the same emitter (the field node
-    # with its type expanded), so we build it once per field and reuse it
-    # instead of rebuilding it for each element. It's never written back to
-    # res.definition, so middleware sees no difference; result nodes carry the
-    # same emitter values as before, just shared.
+    # Expand the field type once. List completion shares an emitter between
+    # siblings, with its type narrowed to the item at each list level.
+    # Middleware keeps the original res.definition.
     {bp_field, res} = prepared_emitter(res, res.definition, res.parent_type, res.path)
     full_type = bp_field.schema_node.type
 
@@ -424,13 +600,34 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         _ -> nil
       end
 
-    errors = maybe_add_non_null_error(errors, value, full_type)
+    {value, res, stream_errors} = Planner.prepare_stream(value, bp_field, res)
+    errors = errors ++ stream_errors
 
     value
     |> to_result(bp_field, full_type, extensions)
     |> add_errors(Enum.reverse(errors), &put_result_error_value(&1, &2, bp_field, source, path))
     |> walk_result(bp_field, full_type, res, path)
-    |> propagate_null_trimming
+  end
+
+  defp prepared_emitter(
+         %{incremental: %{}, fields_cache: cache} = res,
+         bp_field,
+         parent_type,
+         path
+       ) do
+    key = {:emitter_type, Absinthe.Resolution.Projector.cache_key(path, parent_type.identifier)}
+
+    {full_type, res} =
+      case Map.fetch(cache, key) do
+        {:ok, full_type} ->
+          {full_type, res}
+
+        :error ->
+          full_type = Type.expand(bp_field.schema_node.type, res.schema)
+          {full_type, %{res | fields_cache: Map.put(cache, key, full_type)}}
+      end
+
+    {put_in(bp_field.schema_node.type, full_type), res}
   end
 
   defp prepared_emitter(%{fields_cache: cache} = res, bp_field, parent_type, path) do
@@ -447,78 +644,40 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     end
   end
 
-  defp maybe_add_non_null_error(errors, value, type, path \\ [])
-
-  defp maybe_add_non_null_error([], nil, %Type.NonNull{}, []) do
-    ["Cannot return null for non-nullable field"]
-  end
-
-  defp maybe_add_non_null_error([], nil, %Type.NonNull{}, path) do
-    [%{message: "Cannot return null for non-nullable field", path: Enum.reverse(path)}]
-  end
-
-  defp maybe_add_non_null_error([], value, %Type.NonNull{of_type: %Type.List{} = type}, path) do
-    maybe_add_non_null_error([], value, type, path)
-  end
-
-  defp maybe_add_non_null_error([], [_ | _] = values, %Type.List{of_type: type}, path) do
-    values
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {value, index} ->
-      maybe_add_non_null_error([], value, type, [index | path])
-    end)
-  end
-
-  defp maybe_add_non_null_error(errors, _, _, _path) do
-    errors
-  end
-
-  defp propagate_null_trimming({%{values: values} = node, res}) do
-    # Only rebuild the list when something actually needs to be trimmed; in the
-    # common all-good case this avoids re-allocating the values list (and a
-    # copy of the node) just to put back identical elements.
-    if Enum.any?(values, &needs_trimming?/1) do
-      values = Enum.map(values, &do_propagate_null_trimming/1)
-      node = %{node | values: values}
-      {do_propagate_null_trimming(node), res}
-    else
-      {node, res}
-    end
-  end
-
-  defp propagate_null_trimming({node, res}) do
-    {do_propagate_null_trimming(node), res}
+  # Keep newly suspended children until substitution so null propagation can
+  # retain every completed error. Pending work outside this container is irrelevant.
+  defp complete_container(node, res, pending_before) do
+    node = if res.pending == pending_before, do: do_propagate_null_trimming(node), else: node
+    {node, res}
   end
 
   defp do_propagate_null_trimming(node) do
-    if bad_child = find_bad_child(node) do
-      bp_field = node.emitter
-
-      full_type =
-        with %{type: type} <- bp_field.schema_node do
-          type
-        end
-
-      nil
-      |> to_result(bp_field, full_type, node.extensions)
-      |> Map.put(:errors, node.errors ++ bad_child.errors)
+    if find_bad_child(node) do
+      %Result.Leaf{
+        emitter: node.emitter,
+        value: nil,
+        extensions: node.extensions,
+        errors: result_errors(node)
+      }
     else
       node
     end
   end
 
-  # A list element needs the trimming pass if it must be nulled out itself
-  # (a bad child of its own) or if it violates the list's element nullability.
-  defp needs_trimming?(element) do
-    find_bad_child(element) || non_null_list_violation?(element)
-  end
+  defp result_errors(%{fields: fields, errors: errors}),
+    do: errors ++ Enum.flat_map(fields, &result_errors/1)
+
+  defp result_errors(%{values: values, errors: errors}),
+    do: errors ++ Enum.flat_map(values, &result_errors/1)
+
+  defp result_errors(%{errors: errors}), do: errors
 
   defp find_bad_child(%{fields: fields}) do
     Enum.find(fields, &non_null_violation?/1)
   end
 
   defp find_bad_child(%{values: values}) do
-    Enum.find(values, &non_null_list_violation?/1)
+    Enum.find(values, &non_null_violation?/1)
   end
 
   defp find_bad_child(_) do
@@ -532,36 +691,6 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   defp non_null_violation?(_) do
     false
-  end
-
-  defp non_null_list_violation?(%{values: values}) do
-    Enum.find(values, &non_null_list_violation?/1)
-  end
-
-  # FIXME: Not super happy with this lookup process.
-  # Also it would be nice if we could use the same function as above.
-  defp non_null_list_violation?(%{value: nil, emitter: %{schema_node: %{type: type}}}) do
-    !null_allowed_in_list?(type)
-  end
-
-  defp non_null_list_violation?(_) do
-    false
-  end
-
-  defp null_allowed_in_list?(%Type.List{of_type: wrapped_type}) do
-    null_allowed_in_list?(wrapped_type)
-  end
-
-  defp null_allowed_in_list?(%Type.NonNull{of_type: %Type.List{of_type: wrapped_type}}) do
-    null_allowed_in_list?(wrapped_type)
-  end
-
-  defp null_allowed_in_list?(%Type.NonNull{of_type: _wrapped_type}) do
-    false
-  end
-
-  defp null_allowed_in_list?(_type) do
-    true
   end
 
   defp add_errors(result, errors, fun) do
@@ -618,10 +747,12 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   defp to_result(root_value, blueprint, %Type.List{of_type: inner_type}, extensions) do
+    item_blueprint = put_in(blueprint.schema_node.type, inner_type)
+
     values =
       root_value
       |> List.wrap()
-      |> Enum.map(&to_result(&1, blueprint, inner_type, extensions))
+      |> Enum.map(&to_result(&1, item_blueprint, inner_type, extensions))
 
     %Result.List{values: values, emitter: blueprint, extensions: extensions}
   end
