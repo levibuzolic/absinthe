@@ -19,7 +19,9 @@ defmodule Absinthe.Incremental.Directives do
         identifier: identifier,
         definition: Type.BuiltIns.IncrementalDirectives
       })
-      when identifier in [:defer, :stream], do: identifier
+      when identifier in [:defer, :stream] do
+    identifier
+  end
 
   def identifier(_), do: nil
 

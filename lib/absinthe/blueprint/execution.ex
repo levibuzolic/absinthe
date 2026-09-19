@@ -65,7 +65,9 @@ defmodule Absinthe.Blueprint.Execution do
           | Result.Pending
 
   def get(%{execution: %{incremental: %{frame: frame}} = exec}, _operation)
-      when not is_nil(frame), do: exec
+      when not is_nil(frame) do
+    exec
+  end
 
   def get(%{execution: %{result: nil} = exec} = bp_root, operation) do
     result = %Result.Object{

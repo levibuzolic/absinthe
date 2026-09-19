@@ -386,11 +386,12 @@ defmodule Absinthe.Incremental.MutationOrderTest do
 
     assert trace() == [:first_started, :first_completed, :second_started]
 
-    assert {%{
-              "one" => %{"id" => 1, "name" => "Ada"},
-              "two" => %{"observed" => "first completed"}
-            }, _} =
-             Absinthe.Case.Assertions.Incremental.consume(result)
+    assert {data, _} = Absinthe.Case.Assertions.Incremental.consume(result)
+
+    assert data == %{
+             "one" => %{"id" => 1, "name" => "Ada"},
+             "two" => %{"observed" => "first completed"}
+           }
 
     assert trace() == [:name]
   end
