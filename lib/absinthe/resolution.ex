@@ -53,6 +53,9 @@ defmodule Absinthe.Resolution do
           acc: %{any => any},
           extensions: %{any => any},
           arguments: arguments,
+          incremental: nil | Absinthe.Incremental.State.t(),
+          incremental_subscription: boolean,
+          delivery: MapSet.t(Absinthe.Incremental.State.group_ref()),
           fragments: [Absinthe.Blueprint.Document.Fragment.Named.t()]
         }
 

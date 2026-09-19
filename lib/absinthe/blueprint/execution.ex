@@ -55,6 +55,8 @@ defmodule Absinthe.Blueprint.Execution do
           acc: acc,
           pending: [{reference, Absinthe.Resolution.t()}],
           mutation: nil | %{fields: [Absinthe.Blueprint.Document.Field.t()], options: keyword},
+          incremental: nil | Absinthe.Incremental.State.t(),
+          incremental_subscription: boolean,
           resolved: %{optional(reference) => node_t}
         }
 
