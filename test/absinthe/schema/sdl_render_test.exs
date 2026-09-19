@@ -137,16 +137,35 @@ defmodule Absinthe.Schema.SdlRenderTest do
     end
 
     input_object :export_options do
-      field :sort_order, :export_order
-      field :enabled, :boolean
-      field :codes, list_of(:code)
+      field :sort_order, :export_order, default_value: :asc
+      field :enabled, :boolean, default_value: false
+      field :codes, list_of(:code), default_value: [:blue, nil]
+    end
+
+    input_object :export_batch do
+      field :options, list_of(:export_options),
+        default_value: [%{sort_order: :asc, codes: [:blue, nil]}, nil]
+    end
+
+    import_sdl """
+    input ImportedExportOptions {
+      enabled: Boolean = false
+    }
+    """
+
+    extend input_object(:imported_export_options) do
+      field :sort_order, :export_order, default_value: :desc
     end
 
     query do
+      field :fallback, :string, default_value: "fallback"
+
       field :export, :string do
         arg :code, :code, default_value: :blue
         arg :order, non_null(:export_order), default_value: :asc
         arg :literal_string, :string, default_value: @string_default
+        arg :batch, :export_batch
+        arg :imported_options, :imported_export_options
 
         arg :options, :export_options,
           default_value: %{sort_order: :desc, enabled: false, codes: [:blue, nil]}
@@ -175,6 +194,27 @@ defmodule Absinthe.Schema.SdlRenderTest do
              Mix.Tasks.Absinthe.Schema.Sdl.generate_schema(%Mix.Tasks.Absinthe.Schema.Sdl.Options{
                schema: DefaultValuesSchema
              })
+  end
+
+  test "renders macro input field defaults alongside SDL defaults without output field defaults" do
+    sdl = Absinthe.Schema.to_sdl(DefaultValuesSchema)
+
+    assert sdl =~ "sortOrder: ExportOrder = ASCENDING"
+    assert sdl =~ "enabled: Boolean = false"
+    assert sdl =~ ~s(codes: [Code] = ["code:blue", null])
+
+    assert sdl =~
+             ~s(options: [ExportOptions] = [{codes: ["code:blue", null], sortOrder: ASCENDING}, null])
+
+    assert sdl =~ """
+           input ImportedExportOptions {
+             enabled: Boolean = false
+             sortOrder: ExportOrder = DESCENDING
+           }
+           """
+
+    assert sdl =~ "fallback: String\n"
+    assert {:ok, _} = Absinthe.Phase.Parse.run(sdl)
   end
 
   test "renders long string defaults as parseable GraphQL strings" do
