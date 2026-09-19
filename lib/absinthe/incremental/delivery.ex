@@ -74,8 +74,17 @@ defmodule Absinthe.Incremental.Delivery do
   # Publishing a parent can release a child whose shared work already finished.
   # Settle those publications here even when there is no resolver work left.
   defp publish(state) do
-    {entries, extensions, state} = flush(state)
-    {completed, state} = complete(state)
+    ready =
+      state.completion_candidates
+      |> Enum.filter(fn ref ->
+        group = state.groups[ref]
+        group.id != nil and not group.done and not State.has_work?(state, ref)
+      end)
+      |> Enum.sort()
+
+    state = %{state | completion_candidates: MapSet.new()}
+    {entries, extensions, state} = flush(state, ready)
+    {completed, state} = complete(state, ready)
     {pending, state} = announce(state)
 
     if MapSet.size(state.completion_candidates) == 0 do
@@ -88,35 +97,22 @@ defmodule Absinthe.Incremental.Delivery do
     end
   end
 
-  defp flush(state) do
+  defp flush(state, ready) do
     # Private values belong to the whole delivery group. An earlier successful
     # task must not leak them if a later task fails. Shared values become safe
     # once any of their owners succeeds, and are then delivered only once.
-    ready =
-      MapSet.filter(state.completion_candidates, fn ref ->
-        group = state.groups[ref]
-        group.id != nil and not State.has_work?(state, ref) and not Map.has_key?(group, :errors)
-      end)
+    successful = ready |> Enum.reject(&Map.has_key?(state.groups[&1], :errors)) |> MapSet.new()
 
-    refs =
-      ready
-      |> Enum.flat_map(&state.groups[&1].buffered)
-      |> Enum.uniq()
-      |> Enum.sort()
+    refs = state |> State.buffered_refs(successful) |> Enum.sort()
 
     {entries, extensions, state} =
       Enum.reduce(refs, {[], %{}, state}, fn ref, {entries, extensions, state} ->
-        case Map.pop(state.buffered, ref) do
-          {nil, _} ->
-            {entries, extensions, state}
+        {{frame, result}, state} = State.pop_buffer(state, ref)
+        frame = %{frame | groups: MapSet.intersection(frame.groups, successful)}
+        state = State.wake(state, {:frame, ref})
 
-          {{frame, result}, buffered} ->
-            frame = %{frame | groups: MapSet.intersection(frame.groups, ready)}
-            state = State.wake(%{state | buffered: buffered}, {:frame, ref})
-
-            {[entry(frame, result, state) | entries],
-             Map.merge(extensions, Map.get(result, :extensions, %{})), state}
-        end
+        {[entry(frame, result, state) | entries],
+         Map.merge(extensions, Map.get(result, :extensions, %{})), state}
       end)
 
     {Enum.reverse(entries), extensions, state}
@@ -165,7 +161,7 @@ defmodule Absinthe.Incremental.Delivery do
         if State.has_work?(state, ref) or State.has_buffered?(state, ref) do
           case blocked_on(state, group) do
             nil ->
-              id = Integer.to_string(state.next_id)
+              id = Integer.to_string(map_size(state.group_ids))
 
               state = State.announced(state, ref, id)
 
@@ -196,29 +192,12 @@ defmodule Absinthe.Incremental.Delivery do
     if State.has_work?(state, ref), do: {:group, ref}, else: blocking_parent(state, group.parent)
   end
 
-  defp complete(state) do
-    refs = Enum.sort(state.completion_candidates)
-    state = %{state | completion_candidates: MapSet.new()}
-
-    {notices, state} =
-      Enum.reduce(refs, {[], state}, fn ref, {notices, state} ->
-        group = state.groups[ref]
-
-        if group.id != nil and not group.done and not State.has_work?(state, ref) do
-          notice = %{id: group.id} |> put_nonempty(:errors, Map.get(group, :errors, []))
-
-          state = %{
-            state
-            | groups: Map.put(state.groups, ref, %{group | done: true, buffered: []})
-          }
-
-          {[notice | notices], state}
-        else
-          {notices, state}
-        end
-      end)
-
-    {Enum.reverse(notices), state}
+  defp complete(state, ready) do
+    Enum.map_reduce(ready, state, fn ref, state ->
+      group = state.groups[ref]
+      notice = %{id: group.id} |> put_nonempty(:errors, Map.get(group, :errors, []))
+      {notice, put_in(state.groups[ref].done, true)}
+    end)
   end
 
   defp fail(state, frame, errors) do
@@ -244,28 +223,23 @@ defmodule Absinthe.Incremental.Delivery do
         end
       end)
 
-    refs = failed |> Enum.flat_map(&state.groups[&1].buffered) |> Enum.uniq()
+    refs = State.buffered_refs(state, failed)
 
-    buffered =
-      Enum.reduce(refs, state.buffered, fn ref, buffered ->
-        case Map.fetch(buffered, ref) do
-          :error ->
-            buffered
+    state =
+      Enum.reduce(refs, state, fn ref, state ->
+        {{frame, result}, state} = State.pop_buffer(state, ref)
+        groups = MapSet.difference(frame.groups, failed)
 
-          {:ok, {frame, result}} ->
-            groups = MapSet.difference(frame.groups, failed)
-
-            if MapSet.size(groups) == 0,
-              do: Map.delete(buffered, ref),
-              else: Map.put(buffered, ref, {%{frame | groups: groups}, result})
-        end
+        if MapSet.size(groups) == 0,
+          do: state,
+          else: State.buffer(state, %{frame | groups: groups}, result)
       end)
 
     dependencies = Enum.map(failed, &{:group, &1}) ++ Enum.map(unpublished, &{:frame, &1})
-    state = State.cancel_waiters(%{state | buffered: buffered}, dependencies)
+    state = State.cancel_waiters(state, dependencies)
 
     Enum.reduce(failed, state, fn ref, state ->
-      update_in(state.groups[ref], &Map.merge(&1, %{errors: errors, buffered: []}))
+      put_in(state.groups[ref][:errors], errors)
     end)
   end
 
@@ -285,15 +259,11 @@ defmodule Absinthe.Incremental.Delivery do
 
           unpublished =
             Enum.reduce(group.buffered, unpublished, fn value_ref, unpublished ->
-              case Map.fetch(state.buffered, value_ref) do
-                {:ok, {value_frame, _}} ->
-                  if MapSet.subset?(value_frame.groups, failed),
-                    do: MapSet.put(unpublished, value_ref),
-                    else: unpublished
+              {value_frame, _} = Map.fetch!(state.buffered, value_ref)
 
-                :error ->
-                  unpublished
-              end
+              if MapSet.subset?(value_frame.groups, failed),
+                do: MapSet.put(unpublished, value_ref),
+                else: unpublished
             end)
 
           {failed, unpublished}

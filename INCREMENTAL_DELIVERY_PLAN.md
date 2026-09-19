@@ -50,7 +50,8 @@ The scheduler relies on these invariants:
 - **Deferred groups publish atomically.** Private values wait for their whole
   group to succeed. Shared values publish once when any owner succeeds. Child
   groups and streams wait until their containing data is published, including
-  when their shared work has already finished.
+  when their shared work has already finished. Buffer removal updates every
+  owner's live membership together; only publication wakes dependent groups.
 - **Runnable jobs follow enqueue order.** An ordered set avoids scanning blocked
   jobs. Group membership tracks queued and running work; frame IDs track
   execution order. Group identities remain available for occurrence ancestry
@@ -69,8 +70,14 @@ The scheduler relies on these invariants:
   cancel another owner's surviving selections. Formatter-nullified containers
   also prune descendants.
 - **Every announced group completes once.** String IDs identify pending work;
-  paths use response aliases and list indices. Updates precede completion and
-  the final payload has `hasNext: false`.
+  paths use response aliases and list indices. Each publication pass selects
+  completion-ready groups once, publishes their successful values, then emits
+  completion notices. The final payload has `hasNext: false`.
+
+Result completion propagates nulls from children to parents in the recursive
+walk. Resuming suspended fields uses the same bottom-up order when substituting
+their results. Each container returns already completed, without separate
+passes over list children or duplicate checks for non-null leaf errors.
 
 Mutation roots and their eager subtrees finish serially across middleware
 suspensions. Deferred children do not block later roots. Explicit plugin resume
@@ -140,7 +147,7 @@ unqualified claim of literal adherence to every sentence.
 
 ## Test coverage
 
-The branch adds 158 incremental test declarations and two SDL-export regressions.
+The branch adds 159 incremental test declarations and two SDL-export regressions.
 The tests cover:
 
 | Area | Cases and assertions |
@@ -175,10 +182,10 @@ Local checks on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,663 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,663 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,663 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,663 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,664 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,664 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,664 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,664 tests, zero failures, 3 existing exclusions |
 | `mix dialyzer` | Zero errors; ignore entries unchanged |
 | Formatting and `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
