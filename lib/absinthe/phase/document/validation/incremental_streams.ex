@@ -27,49 +27,63 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalStreams do
         {fragment.name, {[id], fragment.schema_node, fragment.selections}}
       end
 
-    state = %{schema: input.schema, groups: MapSet.new(), pairs: MapSet.new(), errors: []}
+    state = %{schema: input.schema, fields: %{}, pairs: MapSet.new(), errors: []}
 
     state =
       Enum.reduce(definitions, state, fn {definition, id}, state ->
-        validate_set([{[id], definition.schema_node, definition.selections}], fragments, state)
+        {_fields, state} =
+          validate_set({[id], definition.schema_node, definition.selections}, fragments, state)
+
+        state
       end)
 
     {:ok, %{input | errors: input.errors ++ Enum.reverse(state.errors)}}
   end
 
-  defp validate_set([], _fragments, state), do: state
+  # Cache original selection sets and pairs, rather than every combination of
+  # merged sets. Reused fragments can otherwise create exponentially many sets.
+  defp validate_set({origin, parent_type, selections}, fragments, state) do
+    case Map.fetch(state.fields, origin) do
+      {:ok, {fields, _contains_stream?}} ->
+        {fields, state}
 
-  defp validate_set(selection_sets, fragments, state) do
-    {fields, _} =
-      Enum.reduce(selection_sets, {[], MapSet.new()}, fn {origin, parent_type, selections}, acc ->
-        collect_fields(selections, origin, parent_type, fragments, acc)
-      end)
+      :error ->
+        {fields, _} =
+          collect_fields(selections, origin, parent_type, fragments, {[], MapSet.new()})
 
-    fields = fields |> Enum.uniq_by(&elem(&1, 0)) |> Enum.reverse()
-    key = fields |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+        fields =
+          fields
+          |> Enum.reverse()
+          |> Enum.group_by(fn {_id, field, _parent_type} -> field.alias || field.name end)
 
-    if MapSet.member?(state.groups, key) do
-      state
-    else
-      state = %{state | groups: MapSet.put(state.groups, key)}
+        state = %{state | fields: Map.put(state.fields, origin, {fields, false})}
+        ordered_fields = Enum.sort_by(fields, &elem(&1, 0))
 
-      fields
-      |> Enum.group_by(fn {_id, field, _parent_type} -> field.alias || field.name end)
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.reduce(state, fn {name, fields}, state ->
-        state = validate_pairs(fields, name, state)
+        state =
+          Enum.reduce(ordered_fields, state, fn {_name, fields}, state ->
+            Enum.reduce(fields, state, fn field, state ->
+              {_fields, state} = validate_set(children(field, state.schema), fragments, state)
+              state
+            end)
+          end)
 
-        fields
-        |> child_groups()
-        |> Enum.reduce(state, fn fields, state ->
-          children =
-            for {id, %{selections: [_ | _] = selections} = field, _parent_type} <- fields do
-              {id, child_type(field, state.schema), selections}
-            end
+        contains_stream? =
+          Enum.any?(fields, fn {_name, fields} ->
+            Enum.any?(fields, &streaming_field?(&1, state))
+          end)
 
-          validate_set(children, fragments, state)
-        end)
-      end)
+        state = %{state | fields: Map.put(state.fields, origin, {fields, contains_stream?})}
+
+        state =
+          if contains_stream? do
+            Enum.reduce(ordered_fields, state, fn {name, fields}, state ->
+              validate_pairs(fields, fields, name, state)
+            end)
+          else
+            state
+          end
+
+        {fields, state}
     end
   end
 
@@ -102,54 +116,78 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalStreams do
     end)
   end
 
-  # FieldsInSetCanMerge checks streams on every pair, but merges child sets only
-  # when the parent types match or either parent is abstract. Keep concrete
-  # alternatives separate through recursion, including abstract selections in
-  # each group so every potentially overlapping pair is still checked.
-  defp child_groups(fields) do
-    groups =
-      Enum.group_by(fields, fn
-        {_id, _field, %Type.Object{identifier: identifier}} -> identifier
-        _ -> nil
-      end)
-
-    {abstract, concrete} = Map.pop(groups, nil, [])
-
-    case Enum.sort_by(concrete, &elem(&1, 0)) do
-      [] -> [abstract]
-      groups -> Enum.map(groups, fn {_type, fields} -> fields ++ abstract end)
-    end
-  end
+  defp children({id, field, _parent_type}, schema),
+    do: {id, child_type(field, schema), field.selections}
 
   defp child_type(%{schema_node: %{type: type}}, schema), do: Schema.lookup_type(schema, type)
   defp child_type(_field, _schema), do: nil
 
-  defp validate_pairs(fields, name, state) do
-    {streams, others} = Enum.split_with(fields, fn {_id, field, _type} -> stream?(field) end)
-    validate_stream_pairs(streams, others, name, state)
+  defp streaming_field?({id, field, _type}, state) do
+    {_fields, contains_stream?} = Map.fetch!(state.fields, id)
+    stream?(field) or contains_stream?
   end
 
-  defp validate_stream_pairs([], _others, _name, state), do: state
+  defp validate_pairs(left, right, name, state) do
+    streamed = Enum.filter(right, &streaming_field?(&1, state))
 
-  defp validate_stream_pairs([{id, field, _type} | rest], others, name, state) do
-    state =
-      Enum.reduce(rest ++ others, state, fn {other_id, other, _type}, state ->
-        key = Enum.sort([id, other_id])
+    Enum.reduce(left, state, fn field, state ->
+      others = if streaming_field?(field, state), do: right, else: streamed
+      Enum.reduce(others, state, &validate_pair(field, &1, name, &2))
+    end)
+  end
 
-        if MapSet.member?(state.pairs, key) do
-          state
-        else
-          error = %Phase.Error{
-            phase: __MODULE__,
-            message: "Fields `#{name}` overlap and cannot use the `stream` directive.",
-            locations: [field.source_location, other.source_location]
-          }
+  defp validate_pair({id, _, _}, {id, _, _}, _name, state), do: state
 
-          %{state | pairs: MapSet.put(state.pairs, key), errors: [error | state.errors]}
-        end
-      end)
+  defp validate_pair(
+         {id, field, type},
+         {other_id, other, other_type},
+         name,
+         state
+       ) do
+    key = Enum.sort([id, other_id])
 
-    validate_stream_pairs(rest, others, name, state)
+    if MapSet.member?(state.pairs, key) do
+      state
+    else
+      state = %{state | pairs: MapSet.put(state.pairs, key)}
+      state = validate_streams(field, other, name, state)
+
+      # Different concrete parents are exclusive. An abstract parent may
+      # overlap either concrete parent, but cannot make them overlap each other.
+      if compatible_parents?(type, other_type) do
+        {left, _} = Map.fetch!(state.fields, id)
+        {right, _} = Map.fetch!(state.fields, other_id)
+
+        left
+        |> Enum.sort_by(&elem(&1, 0))
+        |> Enum.reduce(state, fn {name, fields}, state ->
+          validate_pairs(fields, Map.get(right, name, []), name, state)
+        end)
+      else
+        state
+      end
+    end
+  end
+
+  defp compatible_parents?(%Type.Object{identifier: left}, %Type.Object{identifier: right}),
+    do: left == right
+
+  defp compatible_parents?(_, _), do: true
+
+  defp validate_streams(field, other, name, state) do
+    if stream?(field) or stream?(other) do
+      fields = if stream?(field), do: [field, other], else: [other, field]
+
+      error = %Phase.Error{
+        phase: __MODULE__,
+        message: "Fields `#{name}` overlap and cannot use the `stream` directive.",
+        locations: Enum.map(fields, & &1.source_location)
+      }
+
+      %{state | errors: [error | state.errors]}
+    else
+      state
+    end
   end
 
   defp stream?(field) do
