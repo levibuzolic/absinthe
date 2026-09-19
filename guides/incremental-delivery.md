@@ -6,8 +6,9 @@ enumerable resolves the remaining work as the caller requests more payloads.
 
 This feature follows [GraphQL spec proposal #1110](https://github.com/graphql/graphql-spec/pull/1110)
 at revision [`045e19363c2b55f127960bd3b5e8072a15b29aec`](https://github.com/graphql/graphql-spec/tree/045e19363c2b55f127960bd3b5e8072a15b29aec).
-The proposal is a draft, and its protocol may change. Both the schema and the
-execution caller must opt in.
+This was still the latest proposal revision when checked on 2026-09-19. It is an
+RFC Stage 2 draft, not part of the published September 2025 GraphQL specification,
+and its protocol may change. Both the schema and execution caller must opt in.
 
 ## Enable the directives
 
@@ -44,7 +45,8 @@ directive @stream(if: Boolean! = true, label: String, initialCount: Int! = 0)
 The directives are not repeatable. `@stream` applies only to list fields and
 streams the outermost list when its type contains nested lists. Labels are
 optional string literals; non-null labels must be unique across both directives
-in the entire document. A label cannot be a variable. The `if` and `initialCount`
+in the entire document. An explicit `label: null` is retained in pending notices; an omitted label stays
+omitted. A label cannot be a variable. The `if` and `initialCount`
 arguments may use variables and follow ordinary argument coercion.
 
 Schemas without this import retain their existing behavior, including schemas
@@ -188,6 +190,11 @@ entry is omitted and the corresponding completion notice contains the errors.
 Work below a failed or nulled parent is discarded. Errors retain absolute
 response paths and source locations.
 
+Nested lists respect each wrapper's nullability. For `[[Int!]]`, an inner row
+containing a null becomes `null`, while the outer list and its remaining stream
+items survive. For `[[Int!]!]`, that failure also nulls the outer list or fails
+its already-published stream boundary. Error paths retain every list index.
+
 Root mutation and subscription fields cannot be streamed, and root mutation or
 subscription fragments cannot be deferred. Nested mutation selections support
 incremental delivery while root mutations retain serial execution. Each mutation
@@ -223,6 +230,42 @@ verified cases, and client limitations. The harness explicitly applies two
 unreleased Apollo 4.3.1 fixes for nested streams and cancellation; stock Apollo
 still fails those regressions. It does not add production incremental support
 to Absinthe Plug.
+
+## Select a client format
+
+One schema can serve both clients. Select the response format for each request:
+
+| Client | Execution option | Response format |
+| --- | --- | --- |
+| Apollo `GraphQL17Alpha9Handler` | `incremental_format: :draft` (default) | IDs with `pending`, `incremental`, `completed` and `hasNext` |
+| Relay 21.0.1 | `incremental_format: :relay` | Labeled `data`/`path` patches and `extensions.is_final` |
+
+Both formats use the same directive validation, field collection and execution.
+The default format follows the proposal's response contract. Relay's format is
+an explicit compatibility encoding. The HTTP tests keep requests for both clients
+open against the same endpoint and verify independent format selection and demand.
+
+For Apollo, configure the matching handler:
+
+```javascript
+import { ApolloClient, HttpLink, InMemoryCache } from "@apollo/client";
+import { GraphQL17Alpha9Handler } from "@apollo/client/incremental";
+
+const client = new ApolloClient({
+  cache: new InMemoryCache(),
+  link: new HttpLink({ uri: "/graphql" }),
+  incrementalHandler: new GraphQL17Alpha9Handler(),
+});
+```
+
+The handler advertises `multipart/mixed;incrementalSpec=v0.2`. The transport must
+negotiate that protocol and stream each Absinthe payload as a multipart part.
+Apollo's older `Defer20220824Handler` and `GraphQL17Alpha2Handler` use a different
+wire format; use `GraphQL17Alpha9Handler` for this endpoint. See
+[Apollo's handler documentation](https://www.apollographql.com/docs/react/data/defer)
+and [incremental v0.2](https://specs.apollo.dev/incremental/v0.2/).
+The two Apollo client fixes described above remain necessary for nested streams
+and clean cancellation in version 4.3.1.
 
 ## Relay compatibility
 

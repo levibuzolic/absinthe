@@ -61,6 +61,55 @@ test("Apollo writes deferred data and streamed items into its normalized cache",
   assert.deepEqual(data(operation.cached()), data(final));
 });
 
+test("Apollo preserves explicit null labels on initial and nested pending notices", async (t) => {
+  const operation = observe(
+    t,
+    "{ people @stream(label: null, initialCount: 0) { id friends @stream(label: null, initialCount: 0) { name } } }",
+    { fetchPolicy: "network-only" },
+  );
+  assert.deepEqual(data(await operation.initial()), { people: [] });
+  const final = await operation.finish();
+  assert.deepEqual(data(final), {
+    people: [
+      { id: "1", friends: [{ name: "Grace" }, { name: "Edsger" }] },
+      { id: "2", friends: null },
+      { id: "3", friends: null },
+    ],
+  });
+  assert.deepEqual(data(operation.cached()), data(final));
+  const notices = operation.raw.flatMap((payload) => payload.pending ?? []);
+  assert.equal(notices.length, 2);
+  assert.equal(operation.raw[0].pending.length, 1);
+  for (const notice of notices) {
+    assert.ok(Object.hasOwn(notice, "label"));
+    assert.equal(notice.label, null);
+  }
+});
+
+test("Apollo retains a nullable failed row in a streamed nested-list prefix", async (t) => {
+  const operation = observe(t, "{ matrix @stream(initialCount: 2) }", {
+    fetchPolicy: "network-only",
+  });
+  assert.deepEqual(data(await operation.initial()), { matrix: [[1], null] });
+  assert.deepEqual(operation.raw[0].errors[0].path, ["matrix", 1, 0]);
+  assert.deepEqual(data(await operation.finish()), {
+    matrix: [[1], null, [3]],
+  });
+  assert.deepEqual(data(operation.cached()), { matrix: [[1], null, [3]] });
+  assert.deepEqual(
+    operation.raw
+      .flatMap((payload) => payload.incremental ?? [])
+      .flatMap((patch) => patch.items),
+    [[3]],
+  );
+
+  const required = observe(t, "{ requiredRows @stream(initialCount: 2) }");
+  assert.deepEqual(data(await required.finish()), { requiredRows: null });
+  assert.equal(required.raw.length, 1);
+  assert.deepEqual(required.raw[0].errors[0].path, ["requiredRows", 1, 0]);
+  assert.ok(!("pending" in required.raw[0]));
+});
+
 test("stream variables and initialCount yield progressive client arrays and resolve the list once", async (t) => {
   const operation = observe(
     t,

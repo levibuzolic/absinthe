@@ -55,6 +55,10 @@ defmodule Absinthe.Integration.Execution.IncrementalDeliveryTest do
       field :numbers, list_of(:integer), resolve: &__MODULE__.traced/3
       field :required_numbers, list_of(non_null(:integer)), resolve: &__MODULE__.traced/3
       field :matrix, list_of(list_of(non_null(:integer))), resolve: &__MODULE__.traced/3
+
+      field :required_rows, list_of(non_null(list_of(non_null(:integer)))),
+        resolve: &__MODULE__.traced/3
+
       field :search, list_of(:search_result), resolve: &__MODULE__.traced/3
       field :encoded_value, :encoded
       field :statuses, list_of(:status)
@@ -131,6 +135,33 @@ defmodule Absinthe.Integration.Execution.IncrementalDeliveryTest do
     assert reconstruct(result) == %{"person" => %{"id" => "1", "name" => "Ada"}}
     assert_received {:resolved, ["person", "name"]}
     refute_received {:resolved, ["person"]}
+  end
+
+  test "initial and nested pending notices preserve supplied labels", %{options: options} do
+    for {arguments, label} <- [
+          {"", %{}},
+          {"(label: null)", %{label: nil}},
+          {"(label: \"\")", %{label: ""}},
+          {"(label: \"details\")", %{label: "details"}}
+        ],
+        {query, path, initial?} <- [
+          {"{ person { ... @defer#{arguments} { name } } }", ["person"], true},
+          {"{ numbers @stream#{arguments} }", ["numbers"], true},
+          {"{ person { ... @defer { age ... @defer#{arguments} { name } } } }", ["person"],
+           false},
+          {"{ ... @defer { numbers @stream#{arguments} } }", ["numbers"], false}
+        ] do
+      assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
+      payloads = Enum.to_list(result.subsequent_results)
+
+      pending =
+        if initial?,
+          do: result.initial_result.pending,
+          else: Enum.flat_map(payloads, &Map.get(&1, :pending, []))
+
+      assert [notice] = pending
+      assert Map.delete(notice, :id) == Map.put(label, :path, path)
+    end
   end
 
   test "streaming resolves a list once and postpones tail child resolution", %{options: options} do
@@ -485,6 +516,65 @@ defmodule Absinthe.Integration.Execution.IncrementalDeliveryTest do
              Enum.flat_map(payloads, &Map.get(&1, :completed, [])),
              &Map.has_key?(&1, :errors)
            )
+  end
+
+  test "an initial inner-list failure preserves nullable rows and the streamed tail", %{
+    options: options
+  } do
+    options = Keyword.put(options, :root_value, %{matrix: [[1], [nil], [3]]})
+
+    assert {:ok, result} =
+             Absinthe.run_incremental("{ matrix @stream(initialCount: 2) }", Schema, options)
+
+    assert result.initial_result.data == %{"matrix" => [[1], nil]}
+    assert [%{path: ["matrix", 1, 0]}] = result.initial_result.errors
+    assert [%{path: ["matrix"]}] = result.initial_result.pending
+    payloads = Enum.to_list(result.subsequent_results)
+    assert [%{items: [[3]]}] = Enum.flat_map(payloads, &Map.get(&1, :incremental, []))
+    assert List.last(payloads).hasNext == false
+
+    assert {:ok, eager} = Absinthe.run("{ matrix }", Schema, options)
+    assert eager.data == %{"matrix" => [[1], nil, [3]]}
+    assert [%{path: ["matrix", 1, 0]}] = eager.errors
+
+    assert {:ok, deferred} =
+             Absinthe.run_incremental("{ ... @defer { matrix } }", Schema, options)
+
+    {data, payloads} = Incremental.consume(deferred)
+    assert data == eager.data
+
+    assert [%{errors: [%{path: ["matrix", 1, 0]}]}] =
+             Enum.flat_map(payloads, &Map.get(&1, :incremental, []))
+  end
+
+  test "an initial inner-list failure cancels the tail when rows are non-null", %{
+    options: options
+  } do
+    options = Keyword.put(options, :root_value, %{required_rows: [[1], [nil], [3]]})
+
+    assert {:ok, %{data: %{"requiredRows" => nil}, errors: [error]}} =
+             Absinthe.run_incremental(
+               "{ requiredRows @stream(initialCount: 2) }",
+               Schema,
+               options
+             )
+
+    assert error.path == ["requiredRows", 1, 0]
+
+    assert {:ok, result} =
+             Absinthe.run_incremental(
+               "{ requiredRows @stream(initialCount: 1) }",
+               Schema,
+               options
+             )
+
+    assert result.initial_result.data == %{"requiredRows" => [[1]]}
+    assert [%{id: id}] = result.initial_result.pending
+
+    assert [%{hasNext: false, completed: [%{id: ^id, errors: [error]}]}] =
+             Enum.to_list(result.subsequent_results)
+
+    assert error.path == ["requiredRows", 1, 0]
   end
 
   test "complexity limits apply before any deferred resolver can execute", %{options: options} do

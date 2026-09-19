@@ -169,10 +169,7 @@ defmodule Absinthe.Incremental.Delivery do
 
               state = State.announced(state, ref, id)
 
-              notice = %{id: id, path: group.path}
-
-              notice =
-                if is_nil(group.label), do: notice, else: Map.put(notice, :label, group.label)
+              notice = Map.merge(%{id: id, path: group.path}, Map.take(group, [:label]))
 
               {[notice | notices], state}
 

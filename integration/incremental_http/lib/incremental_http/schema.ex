@@ -174,6 +174,11 @@ defmodule IncrementalHTTP.Schema do
     field :people, list_of(:person), resolve: &__MODULE__.trace/3
     field :numbers, list_of(:integer), resolve: &__MODULE__.trace/3
     field :required_numbers, list_of(non_null(:integer)), resolve: &__MODULE__.trace/3
+    field :matrix, list_of(list_of(non_null(:integer))), resolve: &__MODULE__.trace/3
+
+    field :required_rows, list_of(non_null(list_of(non_null(:integer)))),
+      resolve: &__MODULE__.trace/3
+
     field :empty, list_of(:person), resolve: &__MODULE__.trace/3
     field :absent, :person, resolve: &__MODULE__.trace/3
   end
@@ -205,6 +210,8 @@ defmodule IncrementalHTTP.Schema do
       required_people: [ada, nil, grace],
       numbers: [1, 2, 3],
       required_numbers: [1, nil, 3],
+      matrix: [[1], [nil], [3]],
+      required_rows: [[1], [nil], [3]],
       empty: [],
       absent: nil
     }

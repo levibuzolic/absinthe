@@ -66,11 +66,13 @@ defmodule Absinthe.Incremental.Planner do
           %Type.List{of_type: item_type} = Type.unwrap_non_null(field.schema_node.type)
 
           {group, state} =
-            State.group(res.incremental, %{
-              kind: :stream,
-              path: State.path(res.path),
-              label: args[:label]
-            })
+            State.group(
+              res.incremental,
+              Map.merge(Map.take(args, [:label]), %{
+                kind: :stream,
+                path: State.path(res.path)
+              })
+            )
 
           state =
             State.enqueue(state, %{
@@ -165,13 +167,15 @@ defmodule Absinthe.Incremental.Planner do
         end
 
         {usage, state} =
-          State.group(acc.state, %{
-            kind: :defer,
-            parent: parent,
-            path: State.path(path),
-            label: args[:label],
-            directive: directive
-          })
+          State.group(
+            acc.state,
+            Map.merge(Map.take(args, [:label]), %{
+              kind: :defer,
+              parent: parent,
+              path: State.path(path),
+              directive: directive
+            })
+          )
 
         {usage, %{acc | state: state}}
     end

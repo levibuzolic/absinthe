@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { observeRelay } from "./relay-client.mjs";
+import { data, observe as observeApollo } from "./client.mjs";
 import { startServer } from "./server.mjs";
 
 import AbstractQuery from "./relay/__generated__/RelayCasesAbstractQuery.graphql.js";
@@ -62,6 +63,53 @@ test("Relay compiled defer reconstructs a named fragment", async (t) => {
   assert.ok(!paths(client.id).some((path) => path.at(-1) === "display"));
   const final = await client.finish();
   assert.equal(client.fragment(Details, final.data.hero).data.display, "Ada");
+});
+
+test("Relay and Apollo negotiate independent formats on the same endpoint", async (t) => {
+  const options = { variables: { initial: 1 } };
+  const relay = observeRelay(server, t, NestedQuery, options);
+  const apollo = observeApollo(server, t, NestedQuery.params.text, {
+    ...options,
+    fetchPolicy: "network-only",
+  });
+  const [relayInitial, apolloInitial] = await Promise.all([
+    relay.initial(),
+    apollo.initial(),
+  ]);
+  assert.equal(relayInitial.data.hero.id, "1");
+  assert.deepEqual(data(apolloInitial), { hero: { id: "1" } });
+  assert.equal(server.sessions.get(relay.id).mode, "relay");
+  assert.equal(server.sessions.get(apollo.id).mode, "draft");
+  assert.ok(!("pending" in relay.raw[0]));
+  assert.equal(apollo.raw[0].pending.length, 1);
+
+  const apolloFinal = data(await apollo.finish());
+  assert.deepEqual(data(apollo.cached()), apolloFinal);
+  assert.deepEqual(apolloFinal, {
+    hero: {
+      id: "1",
+      crew: [
+        { id: "2", name: "Grace", age: 40 },
+        { id: "3", name: "Edsger", age: 41 },
+      ],
+    },
+  });
+  assert.equal(relay.raw.length, 1);
+  assert.ok(!server.paths(relay.id).some((path) => path.includes("crew")));
+
+  const relayFinal = await relay.finish();
+  const friends = relay.fragment(Friends, relayFinal.data.hero);
+  assert.equal(friends.isMissingData, false);
+  const people = friends.data.crew.map((person) => {
+    const name = relay.fragment(Name, person);
+    const age = relay.fragment(Age, name.data);
+    assert.equal(name.isMissingData, false);
+    assert.equal(age.isMissingData, false);
+    return { id: person.id, name: name.data.name, age: age.data.age };
+  });
+  assert.deepEqual(people, apolloFinal.hero.crew);
+  assert.equal(relay.raw.at(-1).extensions.is_final, true);
+  assert.equal(apollo.raw.at(-1).hasNext, false);
 });
 
 test("Relay rejects a truncated response before deferred work completes", async (t) => {
