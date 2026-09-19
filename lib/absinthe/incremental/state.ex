@@ -16,6 +16,7 @@ defmodule Absinthe.Incremental.State do
           required(:owner) => non_neg_integer() | nil,
           required(:jobs) => MapSet.t(non_neg_integer()),
           required(:buffered) => MapSet.t(non_neg_integer()),
+          required(:response_keys) => MapSet.t(String.t()) | :all,
           optional(:directive_id) => non_neg_integer(),
           optional(:label) => String.t() | nil,
           optional(:errors) => [term()]
@@ -88,7 +89,8 @@ defmodule Absinthe.Incremental.State do
           parent: nil,
           owner: owner,
           jobs: MapSet.new(),
-          buffered: MapSet.new()
+          buffered: MapSet.new(),
+          response_keys: MapSet.new()
         },
         attributes
       )

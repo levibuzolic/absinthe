@@ -101,7 +101,7 @@ defmodule Absinthe.Incremental.RelayTest do
 
     assert Enum.to_list(result.subsequent_results) == [
              %{
-               data: %{"id" => "1", "name" => "Ada"},
+               data: %{"name" => "Ada"},
                label: "Query$defer$Details",
                path: ["person"],
                hasNext: true,
@@ -112,6 +112,28 @@ defmodule Absinthe.Incremental.RelayTest do
 
     assert_received :resolved_name
     refute_received :resolved_name
+  end
+
+  test "independent deferred siblings emit only their selected response fields" do
+    fragments =
+      for index <- 1..64 do
+        "... @defer(label: \"Q$defer$Details#{index}\") { selected#{index}: id }"
+      end
+
+    query = "{ person { eager: id #{Enum.join(fragments, " ")} } }"
+
+    assert {:ok, result} =
+             Absinthe.run_incremental(query, Schema,
+               incremental_format: :relay,
+               root_value: %{person: %{id: 1}}
+             )
+
+    patches = Enum.filter(result.subsequent_results, &Map.has_key?(&1, :label))
+    assert Enum.sum(Enum.map(patches, &map_size(&1.data))) == 64
+
+    for {patch, index} <- Enum.with_index(patches, 1) do
+      assert patch.data == %{"selected#{index}" => "1"}
+    end
   end
 
   test "a deferred ancestor with no independent work is delivered before its child" do
@@ -132,8 +154,8 @@ defmodule Absinthe.Incremental.RelayTest do
     assert outer.label == "Query$defer$Outer"
     assert inner.label == "Outer$defer$Inner"
     assert outer.path == inner.path
-    assert outer.data == inner.data
-    assert inner.data == %{"id" => "1", "name" => "Ada"}
+    assert outer.data == %{"id" => "1", "name" => "Ada"}
+    assert inner.data == %{"name" => "Ada"}
   end
 
   test "stream items use their absolute list indices after the initial prefix" do
@@ -278,7 +300,6 @@ defmodule Absinthe.Incremental.RelayTest do
     assert [deferred, item, final] = Enum.to_list(result.subsequent_results)
 
     assert deferred.data == %{
-             "opaque" => date,
              "laterOpaque" => [object],
              "friends" => []
            }
@@ -303,9 +324,11 @@ defmodule Absinthe.Incremental.RelayTest do
     assert result.extensions == %{trace: "present", is_final: true}
   end
 
-  test "deferred errors stay scoped to each list item and retain order across snapshots" do
+  test "deferred errors follow projected fields and retain order within each list item" do
     query = """
-    { person { friends { id failure ... @defer(label: "Q$defer$Details") { later: failure } } } }
+    { person { friends { id failure ... @defer(label: "Q$defer$Details") {
+      later: failure after: failure
+    } } } }
     """
 
     assert {:ok, result} =
@@ -320,7 +343,8 @@ defmodule Absinthe.Incremental.RelayTest do
     for {patch, index} <- Enum.with_index(patches) do
       assert patch.path == ["person", "friends", index]
 
-      assert Enum.map(patch.errors, & &1.path) == [["failure"], ["later"]]
+      assert patch.data == %{"later" => nil, "after" => nil}
+      assert Enum.map(patch.errors, & &1.path) == [["after"], ["later"]]
       assert Enum.all?(patch.errors, &(&1.message == "unavailable"))
     end
   end
