@@ -106,6 +106,13 @@ supervisor or background coordinator is required. Existing asynchronous
 middleware may create tasks while a payload is being resolved and settles those
 tasks before that payload is yielded.
 
+Operation telemetry emits one `[:absinthe, :execute, :operation, :start]` and
+`[:absinthe, :execute, :operation, :stop]` pair for the initial call, before
+`run_incremental/3` returns. Deferred and streamed field work emits its field
+telemetry while `subsequent_results` is consumed, including when asynchronous
+middleware is settled during a pull. Halting or discarding the enumerable leaves
+later work and its telemetry unexecuted.
+
 The list resolver still returns its list once. `@stream` defers completion of
 the remaining items and their fields; it does not turn a database query into a
 cursor or paginate an external data source. The remaining source items are held
