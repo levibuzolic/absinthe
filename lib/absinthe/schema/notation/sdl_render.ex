@@ -25,7 +25,7 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     Absinthe.Type.BuiltIns.Scalars,
     Absinthe.Type.BuiltIns.Introspection
   ]
-  defp render(bp, type_definitions \\ [])
+  defp render(bp, context \\ %{types: []})
 
   defp render(%Blueprint{} = bp, _) do
     %{
@@ -42,100 +42,105 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
       directive_definitions
       |> Enum.reject(&(&1.module in @skip_modules))
 
+    context = %{
+      types: type_definitions,
+      runtime_types: Map.new(Absinthe.Phase.Schema.Build.build_types(bp), &{&1.identifier, &1})
+    }
+
     types_to_render =
       type_definitions
       |> Enum.reject(&(&1.module in @skip_modules))
       |> Enum.filter(& &1.__private__[:__absinthe_referenced__])
 
     ([schema_declaration] ++ directive_definitions ++ types_to_render)
-    |> Enum.map(&render(&1, type_definitions))
+    |> Enum.map(&render(&1, context))
     |> Enum.reject(&(&1 == empty()))
     |> join([line(), line()])
   end
 
-  defp render(%Blueprint.Schema.SchemaDeclaration{} = schema, type_definitions) do
+  defp render(%Blueprint.Schema.SchemaDeclaration{} = schema, context) do
     block(
       concat([
         "schema",
-        directives(schema.directives, type_definitions)
+        directives(schema.directives, context)
       ]),
-      render_list(schema.field_definitions, type_definitions)
+      render_list(schema.field_definitions, context)
     )
     |> description(schema.description)
   end
 
   @adapter Absinthe.Adapter.LanguageConventions
-  defp render(%Blueprint.Schema.InputValueDefinition{} = input_value, type_definitions) do
+  defp render(%Blueprint.Schema.InputValueDefinition{} = input_value, context) do
     concat([
       string(@adapter.to_external_name(input_value.name, :argument)),
       ": ",
-      render(input_value.type, type_definitions),
-      default(input_value.default_value_blueprint),
-      directives(input_value.directives, type_definitions)
+      render(input_value.type, context),
+      default(input_value, context),
+      directives(input_value.directives, context)
     ])
     |> description(input_value.description)
   end
 
-  defp render(%Blueprint.Schema.FieldDefinition{} = field, type_definitions) do
+  defp render(%Blueprint.Schema.FieldDefinition{} = field, context) do
     concat([
       string(@adapter.to_external_name(field.name, :field)),
-      arguments(field.arguments, type_definitions),
+      arguments(field.arguments, context),
       ": ",
-      render(field.type, type_definitions),
-      directives(field.directives, type_definitions)
+      render(field.type, context),
+      directives(field.directives, context)
     ])
     |> description(field.description)
   end
 
-  defp render(%Blueprint.Schema.ObjectTypeDefinition{} = object_type, type_definitions) do
+  defp render(%Blueprint.Schema.ObjectTypeDefinition{} = object_type, context) do
     block(
       "type",
       concat([
         string(object_type.name),
-        implements(object_type, type_definitions),
-        directives(object_type.directives, type_definitions)
+        implements(object_type, context),
+        directives(object_type.directives, context)
       ]),
-      render_list(object_type.fields, type_definitions)
+      render_list(object_type.fields, context)
     )
     |> description(object_type.description)
   end
 
-  defp render(%Blueprint.Schema.InputObjectTypeDefinition{} = input_object_type, type_definitions) do
+  defp render(%Blueprint.Schema.InputObjectTypeDefinition{} = input_object_type, context) do
     block(
       concat([
         "input ",
         string(input_object_type.name),
-        directives(input_object_type.directives, type_definitions)
+        directives(input_object_type.directives, context)
       ]),
-      render_list(input_object_type.fields, type_definitions)
+      render_list(input_object_type.fields, context)
     )
     |> description(input_object_type.description)
   end
 
-  defp render(%Blueprint.Schema.UnionTypeDefinition{} = union_type, type_definitions) do
+  defp render(%Blueprint.Schema.UnionTypeDefinition{} = union_type, context) do
     Enum.map(union_type.types, fn
       identifier when is_atom(identifier) ->
-        render(%Blueprint.TypeReference.Identifier{id: identifier}, type_definitions)
+        render(%Blueprint.TypeReference.Identifier{id: identifier}, context)
 
       %Blueprint.TypeReference.Name{} = ref ->
-        render(ref, type_definitions)
+        render(ref, context)
 
       %Blueprint.TypeReference.Identifier{} = ref ->
-        render(ref, type_definitions)
+        render(ref, context)
     end)
     |> case do
       [] ->
         concat([
           "union ",
           string(union_type.name),
-          directives(union_type.directives, type_definitions)
+          directives(union_type.directives, context)
         ])
 
       types ->
         concat([
           "union ",
           string(union_type.name),
-          directives(union_type.directives, type_definitions),
+          directives(union_type.directives, context),
           " = ",
           join(types, " | ")
         ])
@@ -143,56 +148,56 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     |> description(union_type.description)
   end
 
-  defp render(%Blueprint.Schema.InterfaceTypeDefinition{} = interface_type, type_definitions) do
+  defp render(%Blueprint.Schema.InterfaceTypeDefinition{} = interface_type, context) do
     block(
       "interface",
       concat([
         string(interface_type.name),
-        implements(interface_type, type_definitions),
-        directives(interface_type.directives, type_definitions)
+        implements(interface_type, context),
+        directives(interface_type.directives, context)
       ]),
-      render_list(interface_type.fields, type_definitions)
+      render_list(interface_type.fields, context)
     )
     |> description(interface_type.description)
   end
 
-  defp render(%Blueprint.Schema.EnumTypeDefinition{} = enum_type, type_definitions) do
+  defp render(%Blueprint.Schema.EnumTypeDefinition{} = enum_type, context) do
     block(
       concat([
         "enum ",
         string(enum_type.name),
-        directives(enum_type.directives, type_definitions)
+        directives(enum_type.directives, context)
       ]),
-      render_list(List.flatten(enum_type.values), type_definitions)
+      render_list(List.flatten(enum_type.values), context)
     )
     |> description(enum_type.description)
   end
 
-  defp render(%Blueprint.Schema.EnumValueDefinition{} = enum_value, type_definitions) do
+  defp render(%Blueprint.Schema.EnumValueDefinition{} = enum_value, context) do
     concat([
       string(enum_value.name),
-      directives(enum_value.directives, type_definitions)
+      directives(enum_value.directives, context)
     ])
     |> description(enum_value.description)
   end
 
-  defp render(%Blueprint.Schema.ScalarTypeDefinition{} = scalar_type, type_definitions) do
+  defp render(%Blueprint.Schema.ScalarTypeDefinition{} = scalar_type, context) do
     concat([
       "scalar ",
       string(scalar_type.name),
-      directives(scalar_type.directives, type_definitions)
+      directives(scalar_type.directives, context)
     ])
     |> description(scalar_type.description)
   end
 
-  defp render(%Blueprint.Schema.DirectiveDefinition{} = directive, type_definitions) do
+  defp render(%Blueprint.Schema.DirectiveDefinition{} = directive, context) do
     locations = directive.locations |> Enum.map(&String.upcase(to_string(&1)))
 
     concat([
       "directive ",
       "@",
       string(Absinthe.Utils.camelize(directive.name, lower: true)),
-      arguments(directive.arguments, type_definitions),
+      arguments(directive.arguments, context),
       repeatable(directive.repeatable),
       " on ",
       join(locations, " | ")
@@ -200,15 +205,15 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     |> description(directive.description)
   end
 
-  defp render(%Blueprint.Directive{} = directive, type_definitions) do
+  defp render(%Blueprint.Directive{} = directive, context) do
     concat([
       " @",
       directive.name,
-      directive_arguments(directive.arguments, type_definitions)
+      directive_arguments(directive.arguments, context)
     ])
   end
 
-  defp render(%Blueprint.Input.Argument{} = argument, _type_definitions) do
+  defp render(%Blueprint.Input.Argument{} = argument, _context) do
     concat([
       argument.name,
       ": ",
@@ -216,17 +221,17 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     ])
   end
 
-  defp render(%Blueprint.TypeReference.Name{name: name}, _type_definitions) do
+  defp render(%Blueprint.TypeReference.Name{name: name}, _context) do
     string(name)
   end
 
-  defp render(%Blueprint.TypeReference.Identifier{id: id}, type_definitions) do
-    type = Enum.find(type_definitions, &(&1.identifier == id))
+  defp render(%Blueprint.TypeReference.Identifier{id: id}, context) do
+    type = Enum.find(context.types, &(&1.identifier == id))
 
     if type do
       string(type.name)
     else
-      all_type_ids = Enum.map(type_definitions, & &1.identifier)
+      all_type_ids = Enum.map(context.types, & &1.identifier)
 
       raise """
       No type found for identifier #{inspect(id)} in #{inspect(all_type_ids)}
@@ -234,20 +239,20 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     end
   end
 
-  defp render(%Blueprint.TypeReference.List{of_type: of_type}, type_definitions) do
-    concat(["[", render(of_type, type_definitions), "]"])
+  defp render(%Blueprint.TypeReference.List{of_type: of_type}, context) do
+    concat(["[", render(of_type, context), "]"])
   end
 
-  defp render(%Blueprint.TypeReference.NonNull{of_type: of_type}, type_definitions) do
-    concat([render(of_type, type_definitions), "!"])
+  defp render(%Blueprint.TypeReference.NonNull{of_type: of_type}, context) do
+    concat([render(of_type, context), "!"])
   end
 
   defp render(nil, _) do
     raise "Unexpected nil"
   end
 
-  defp render(identifier, type_definitions) when is_atom(identifier) do
-    render(%Blueprint.TypeReference.Identifier{id: identifier}, type_definitions)
+  defp render(identifier, context) when is_atom(identifier) do
+    render(%Blueprint.TypeReference.Identifier{id: identifier}, context)
   end
 
   # SDL Syntax Helpers
@@ -256,21 +261,21 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     empty()
   end
 
-  defp directives(directives, type_definitions) do
+  defp directives(directives, context) do
     directives =
       Enum.map(directives, fn directive ->
         %{directive | name: Absinthe.Utils.camelize(directive.name, lower: true)}
       end)
 
-    concat(Enum.map(directives, &render(&1, type_definitions)))
+    concat(Enum.map(directives, &render(&1, context)))
   end
 
   defp directive_arguments([], _) do
     empty()
   end
 
-  defp directive_arguments(arguments, type_definitions) do
-    args = Enum.map(arguments, &render(&1, type_definitions))
+  defp directive_arguments(arguments, context) do
+    args = Enum.map(arguments, &render(&1, context))
 
     concat([
       "(",
@@ -283,7 +288,7 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     empty()
   end
 
-  defp arguments(args, type_definitions) do
+  defp arguments(args, context) do
     any_descriptions? = Enum.any?(args, & &1.description)
 
     group(
@@ -293,7 +298,7 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
             glue(
               "(",
               "",
-              render_list(args, type_definitions, ", ")
+              render_list(args, context, ", ")
             ),
             any_descriptions?
           ),
@@ -306,12 +311,24 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     )
   end
 
-  defp default(nil) do
-    empty()
+  defp default(%{default_value_blueprint: value}, _) when not is_nil(value) do
+    concat([" = ", render_value(value)])
   end
 
-  defp default(default_value) do
-    concat([" = ", render_value(default_value)])
+  defp default(%{default_value: nil}, _), do: empty()
+
+  defp default(input_value, context) do
+    type = Blueprint.TypeReference.to_type(input_value.type, %{type_definitions: context.types})
+
+    value =
+      Absinthe.Type.BuiltIns.Introspection.render_default_value(
+        context.runtime_types,
+        @adapter,
+        type,
+        input_value.default_value
+      )
+
+    concat([" = ", value])
   end
 
   defp description(docs, nil) do
@@ -330,12 +347,12 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     empty()
   end
 
-  defp implements(interface, type_definitions) do
+  defp implements(interface, context) do
     interface_names =
       case interface do
         %{interface_blueprints: [], interfaces: identifiers} ->
           Enum.map(identifiers, fn identifier ->
-            Enum.find_value(type_definitions, fn
+            Enum.find_value(context.types, fn
               %{identifier: ^identifier, name: name} -> name
               _ -> nil
             end)
@@ -356,11 +373,11 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
 
   # Render Helpers
 
-  defp render_list(items, type_definitions, separator \\ line())
+  defp render_list(items, context, separator \\ line())
 
   # Workaround for `values` macro which temporarily defines
   # values as raw atoms to support dynamic schemas
-  defp render_list([first | _] = items, type_definitions, separator) when is_atom(first) do
+  defp render_list([first | _] = items, context, separator) when is_atom(first) do
     items
     |> Enum.map(
       &%Blueprint.Schema.EnumValueDefinition{
@@ -368,10 +385,10 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
         name: String.upcase(to_string(&1))
       }
     )
-    |> render_list(type_definitions, separator)
+    |> render_list(context, separator)
   end
 
-  defp render_list(items, type_definitions, separator) do
+  defp render_list(items, context, separator) do
     items = Enum.reject(items, &(&1.module in @skip_modules))
 
     splitter =
@@ -385,8 +402,8 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
     items
     |> Enum.reverse()
     |> Enum.reduce(:start, fn
-      item, :start -> render(item, type_definitions)
-      item, acc -> concat([render(item, type_definitions)] ++ splitter ++ [acc])
+      item, :start -> render(item, context)
+      item, acc -> concat([render(item, context)] ++ splitter ++ [acc])
     end)
   end
 

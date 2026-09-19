@@ -23,7 +23,7 @@ defmodule Absinthe.Utils.Render do
     |> String.split("\n")
     |> case do
       [string_line] ->
-        concat([~s("), escape_string(string_line), ~s(")])
+        render_quoted_string(string_line)
 
       string_lines ->
         concat(
@@ -37,22 +37,20 @@ defmodule Absinthe.Utils.Render do
     end
   end
 
+  def render_quoted_string(string) do
+    ~s(") <> escape_string(string) <> ~s(")
+  end
+
   @escaped_chars [?", ?\\, ?/, ?\b, ?\f, ?\n, ?\r, ?\t]
 
   defp escape_string(string) do
-    escape_string(string, [])
-  end
-
-  defp escape_string(<<char, rest::binary>>, acc) when char in @escaped_chars do
-    escape_string(rest, [acc | escape_char(char)])
-  end
-
-  defp escape_string(<<char::utf8, rest::binary>>, acc) do
-    escape_string(rest, acc ++ [<<char::utf8>>])
-  end
-
-  defp escape_string(<<>>, acc) do
-    to_string(acc)
+    for char <- String.to_charlist(string), into: "" do
+      cond do
+        char in @escaped_chars -> to_string(escape_char(char))
+        char < 0x20 -> "\\u" <> String.pad_leading(Integer.to_string(char, 16), 4, "0")
+        true -> <<char::utf8>>
+      end
+    end
   end
 
   defp escape_char(?"), do: [?\\, ?"]
