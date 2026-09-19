@@ -33,6 +33,13 @@ defmodule Absinthe.Integration.Execution.IncrementalSubscriptionTest do
     object :person do
       field :name, :string
       field :friends, list_of(:string)
+
+      field :observed_name, :string do
+        resolve fn %{name: name, pid: pid}, _, _ ->
+          send(pid, :person_name_resolved)
+          {:ok, name}
+        end
+      end
     end
 
     object :dog do
@@ -209,6 +216,90 @@ defmodule Absinthe.Integration.Execution.IncrementalSubscriptionTest do
     {key, topic} = subscribe(document, false, StreamOnlySchema)
     publish(key, %{numbers: [1, 2]})
     assert_receive {:event, ^topic, %{data: %{"event" => %{"numbers" => [1, 2]}}}}
+  end
+
+  test "ordinary registration honors variable inclusion on a deferred named fragment" do
+    document = """
+    subscription($later: Boolean!, $included: Boolean!, $topic: String!) {
+      event(topic: $topic) {
+        subject {
+          __typename
+          ...PersonFields @defer(if: $later) @include(if: $included)
+        }
+      }
+    }
+    fragment PersonFields on Person { observedName }
+    """
+
+    for {later, included} <- [{true, false}, {true, true}, {false, true}] do
+      {key, topic} = subscribe_ordinary(document, %{"later" => later, "included" => included})
+      publish(key, %{subject: %{kind: :person, name: "Ada", pid: self()}})
+      assert_receive {:event, ^topic, result}
+
+      case {later, included} do
+        {true, false} ->
+          assert result == %{data: %{"event" => %{"subject" => %{"__typename" => "Person"}}}}
+          refute_received :person_name_resolved
+
+        {true, true} ->
+          assert %{data: %{"event" => %{"subject" => nil}}, errors: [error]} = result
+          assert error.path == ["event", "subject"]
+
+          assert error.message ==
+                   "The @defer directive is not supported on subscription operations."
+
+          refute_received :person_name_resolved
+
+        {false, true} ->
+          assert result == %{
+                   data: %{
+                     "event" => %{
+                       "subject" => %{"__typename" => "Person", "observedName" => "Ada"}
+                     }
+                   }
+                 }
+
+          assert_received :person_name_resolved
+          refute_received :person_name_resolved
+      end
+    end
+  end
+
+  test "an excluded named fragment does not hide a later included active defer" do
+    document = """
+    subscription($later: Boolean!, $excluded: Boolean!, $included: Boolean!, $topic: String!) {
+      event(topic: $topic) {
+        subject {
+          ...PersonFields @include(if: $excluded)
+          ...PersonFields @defer(if: $later) @include(if: $included)
+        }
+      }
+    }
+    fragment PersonFields on Person { observedName }
+    """
+
+    {key, topic} =
+      subscribe_ordinary(document, %{"later" => true, "excluded" => false, "included" => true})
+
+    publish(key, %{subject: %{kind: :person, name: "Ada", pid: self()}})
+
+    assert_receive {:event, ^topic, %{data: %{"event" => %{"subject" => nil}}, errors: [error]}}
+    assert error.path == ["event", "subject"]
+    assert error.message == "The @defer directive is not supported on subscription operations."
+    refute_received :person_name_resolved
+  end
+
+  defp subscribe_ordinary(document, variables) do
+    key = Integer.to_string(System.unique_integer([:positive]))
+
+    assert {:ok, %{"subscribed" => topic}} =
+             Absinthe.run(document, Schema,
+               variables: Map.put(variables, "topic", key),
+               context: %{pubsub: PubSub}
+             )
+
+    PubSub.subscribe(topic)
+    {key, topic}
   end
 
   defp subscribe(document, later, schema \\ Schema) do

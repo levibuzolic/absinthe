@@ -14,6 +14,13 @@ defmodule Absinthe.Incremental.LifecycleTest do
       field :age, :integer
       field :other, :string
 
+      field :observed_name, :string do
+        resolve fn source, _, %{context: %{test_pid: pid}} ->
+          send(pid, :observed_name_resolved)
+          {:ok, source.name}
+        end
+      end
+
       field :required_failure, non_null(:string) do
         resolve fn _, _ -> {:error, "failed"} end
       end
@@ -21,6 +28,7 @@ defmodule Absinthe.Incremental.LifecycleTest do
 
     query do
       field :person, :person
+      field :people, list_of(:person)
     end
   end
 
@@ -33,6 +41,9 @@ defmodule Absinthe.Incremental.LifecycleTest do
       case blueprint.result do
         %{data: %{"redactedPerson" => _}} ->
           {:ok, put_in(blueprint.result.data["redactedPerson"], nil)}
+
+        %{data: %{"redactedPeople" => _}} ->
+          {:ok, put_in(blueprint.result.data["redactedPeople"], nil)}
 
         _ ->
           {:ok, blueprint}
@@ -130,6 +141,47 @@ defmodule Absinthe.Incremental.LifecycleTest do
 
     for payload <- payloads, completion <- Map.get(payload, :completed, []) do
       refute Map.has_key?(completion, :errors)
+    end
+  end
+
+  test "redacting a list cancels its stream tail and deferred items during initial and later work" do
+    selection = """
+    redactedPeople: people @stream(initialCount: 1, label: "tail") {
+      name
+      ... @defer(label: "item") { observedName }
+    }
+    """
+
+    for {fields, labels} <- [
+          {selection, ["survives"]},
+          {"... @defer(label: \"outer\") { #{selection} }", ["outer", "survives"]}
+        ] do
+      query = "{ #{fields} ... @defer(label: \"survives\") { person { name } } }"
+
+      assert {:ok, result} =
+               Absinthe.run_incremental(
+                 query,
+                 Schema,
+                 with_redaction(
+                   context: %{test_pid: self()},
+                   root_value: %{
+                     people: [%{name: "Ada"}, %{name: "Grace"}],
+                     person: %{name: "Lin"}
+                   }
+                 )
+               )
+
+      assert {%{"redactedPeople" => nil, "person" => %{"name" => "Lin"}}, payloads} =
+               Incremental.consume(result)
+
+      assert labels ==
+               Enum.sort(
+                 for payload <- payloads,
+                     notice <- Map.get(payload, :pending, []),
+                     do: notice.label
+               )
+
+      refute_received :observed_name_resolved
     end
   end
 

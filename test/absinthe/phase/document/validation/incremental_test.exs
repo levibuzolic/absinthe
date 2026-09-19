@@ -493,6 +493,52 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalTest do
              )
   end
 
+  test "overlap locations deduplicate reused fragments across selected operations" do
+    document = """
+    query One {
+      node {
+        ...Pair
+        ...Plain
+      }
+    }
+    query Two {
+      node {
+        ...Pair
+        ...Plain
+        ...SecondStream
+      }
+    }
+    fragment Pair on Node {
+      names @stream(label: "streamA")
+      names
+    }
+    fragment Plain on Node {
+      names
+    }
+    fragment SecondStream on Node {
+      names @stream(label: "streamB")
+    }
+    """
+
+    assert {:ok, %{errors: incremental_errors}} =
+             Absinthe.run_incremental(document, Schema, operation_name: "One")
+
+    assert {:ok, %{errors: ordinary_errors}} =
+             Absinthe.run(document, Schema, operation_name: "One")
+
+    expected =
+      MapSet.new([
+        {{15, 3}, {16, 3}},
+        {{15, 3}, {19, 3}},
+        {{15, 3}, {22, 3}},
+        {{16, 3}, {22, 3}},
+        {{19, 3}, {22, 3}}
+      ])
+
+    assert overlap_pairs(incremental_errors) == expected
+    assert overlap_pairs(ordinary_errors) == expected
+  end
+
   test "overlap errors report the locations of both field occurrences" do
     assert [%{locations: [%{line: 2}, %{line: 3}]}] =
              errors("""
@@ -501,5 +547,18 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalTest do
                names
              } }
              """)
+  end
+
+  defp overlap_pairs(errors) do
+    assert length(errors) == 5
+
+    errors
+    |> Enum.map(fn %{locations: locations} ->
+      locations
+      |> Enum.map(&{&1.line, &1.column})
+      |> Enum.sort()
+      |> List.to_tuple()
+    end)
+    |> MapSet.new()
   end
 end

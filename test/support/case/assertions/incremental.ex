@@ -65,6 +65,12 @@ defmodule Absinthe.Case.Assertions.Incremental do
   defp update_path(value, [], fun), do: fun.(value)
 
   defp update_path(values, [index | rest], fun) when is_integer(index) do
+    assert is_list(values), "expected a list at index #{inspect(index)}, got: #{inspect(values)}"
+    assert index >= 0, "expected a non-negative list index, got: #{inspect(index)}"
+
+    assert index < length(values),
+           "list index #{inspect(index)} is out of bounds for a list of length #{length(values)}"
+
     List.update_at(values, index, &update_path(&1, rest, fun))
   end
 

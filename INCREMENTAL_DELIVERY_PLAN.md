@@ -319,3 +319,97 @@ fixture (86/87 passed); the serial run passed all 87. No Plug production or test
 code was changed. Dialyzer caught an overly restrictive map contract in the new
 directive helper; it now requires the directives field while allowing the
 remaining blueprint fields, with no new warning suppressions.
+
+## Coverage audit of the primary implementation branch
+
+The 2026-09-19 audit started at `d66f7e35` on `codex/incremental-delivery`,
+with 1,613 passing tests and 110 incremental test declarations. It adds 35
+incremental tests and two schema-export tests, bringing the suite to 1,650
+tests. The existing three exclusions are unchanged; none of the incremental
+tests is skipped. This audit concerns the primary implementation, not the
+separate Relay protocol branch.
+
+The audit found and fixed three concrete weaknesses:
+
+- The in-process test consumer silently ignored out-of-bounds list paths and
+  accepted negative indices through `List.update_at/3`. It now rejects both,
+  with failing-then-passing consumer regressions.
+- An inherited execution bug started later mutation roots while an earlier
+  root or its eager children remained suspended. Both execution APIs now
+  finish each eager mutation subtree before starting the next root. Twelve
+  tests cover repeated suspension, Async, Batch, Dataloader, nullable/non-null
+  failures, aliases, context, and plugin options. An explicit callback-disabled
+  resume keeps its options; the next root uses the original execution options.
+- SDL export dropped macro-defined defaults, including the new directives'
+  `if` and `initialCount` defaults. The focused core fixes from `9e1cc538` and
+  `c0662ec5` preserve typed defaults and GraphQL string escaping. Regressions
+  cover the directives, enum/input/scalar defaults, and parseable long strings.
+  No Relay protocol or HTTP adapter implementation was imported.
+
+The added evidence covers these combinations:
+
+| Area | Assertions |
+| --- | --- |
+| Combined scheduling | 768 deterministic combinations of shared defer parents, nested fragments, stream enablement/prefixes, aliases, and populated/empty/null lists; independently expected initial data, eager final-data comparison, and exact resolver paths |
+| Abstract types | Deferred named and inline fragments on interfaces/unions, matching and nonmatching concrete types, streamed items, initial omission and final values |
+| Failure and cancellation | Async/Batch failures during initial/deferred/streamed work, nullable versus non-null items, surviving unrelated work, failed shared owners, and formatter-nullified lists |
+| Validation and options | Mixed custom/builtin directives, all five overlap pairs across reused fragments/operations, variable subscription exclusions, continuation pipeline failures, and completion error formatting |
+| Payload consumer | Unique announcements, owned updates, exactly-once completion, terminal state, duplicate fields, and valid list indices |
+
+The 768 cases are one bounded combination test, not 768 ExUnit declarations or
+an exhaustive schema generator. The success oracle checks the expected initial
+shape separately from the returned data, so executing everything eagerly cannot
+pass merely because the final result is correct. Resolver traces establish
+which work has run without synchronization sleeps.
+
+Ten targeted fault injections produced actual ExUnit failures: ignoring false
+conditions, resolving an extra initial item, skipping a stream index, omitting
+completion, bypassing null pruning, retaining failed occurrences, capturing
+custom directives, stopping overlap-pair enumeration early, executing all work
+eagerly, and ignoring inline defer. Each source mutation was restored before
+final verification. This is a representative diagnostic, not an exhaustive
+mutation-testing score.
+
+Full-suite instrumentation covers 456/470 executable lines (97.0%) across the
+eight dedicated incremental API, scheduling, delivery, and validation modules,
+up from 450/470 (95.7%). Artificial coverage line zero is excluded; generated
+phase code remains included. Shared resolution covers 235/242 lines. Remaining
+misses include phase boilerplate, malformed/missing blueprint fallbacks and
+defensive cancellation branches. Line coverage does not establish branch or
+draft-spec conformance, and unreachable states were not manufactured just to
+raise the percentage.
+
+The real-client check uses the committed HTTP harness from
+`codex/incremental-client-e2e` at `2c0537d9`, exported to a temporary directory
+with only its local Absinthe dependency pointed at this working tree. It uses
+Apollo Client 4.3.0's `GraphQL17Alpha9Handler` over actual multipart HTTP. The
+runner passes all 22 tests with no skips, including compilation and formatting.
+Two tests characterize existing Apollo defects: nested streams introduced in
+streamed items lose data in the client, and unsubscribe produces an unhandled
+reader `AbortError`. Those passing characterizations are not claims that the
+affected client behaviors work. The harness is maintained in its separate task
+and is not part of this branch's CI.
+
+Final local verification after the audit fixes and strengthened assertions:
+
+| Check | Result |
+| --- | --- |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,650 passed, 3 excluded |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,650 passed, 3 excluded |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,650 passed, 3 excluded |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,650 passed, 3 excluded |
+| Apollo HTTP harness, Node 24.21.0 / Elixir 1.19.5 / OTP 28.5 | 22 passed, no skips; two known client-defect characterizations |
+| `mix dialyzer` | 0 errors; ignore entries unchanged |
+| `mix format --check-formatted`, `git diff --check` | Passed |
+| `mix docs` | Passed with existing documentation warnings |
+
+All four full suites used `mix test --warnings-as-errors`; the compiled
+Elixir 1.20 run also used `--cover --export-coverage incremental-coverage-audit`.
+Independent Astra review checked the mutation fix and the new test assertions;
+Luna handled the bounded consumer and overlap-pair cases and coverage inventory.
+
+These checks establish substantially stronger confidence in the core API and
+the tested client cases. They do not certify every client, a production Absinthe
+Plug transport, proxy buffering, arbitrary resolver-owned background work, or
+all operating systems and CI runtime combinations. The target remains the
+pinned draft proposal rather than a ratified feature.

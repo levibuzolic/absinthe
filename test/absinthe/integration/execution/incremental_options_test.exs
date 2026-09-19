@@ -34,6 +34,14 @@ defmodule Absinthe.Integration.Execution.IncrementalOptionsTest do
         resolve fn _, _ -> {:error, %{message: "unavailable", code: "OFFLINE"}} end
       end
 
+      field :required_failure, non_null(:string) do
+        resolve fn _, _ -> {:error, %{message: "unavailable", code: "OFFLINE"}} end
+      end
+
+      field :required_numbers, list_of(non_null(:integer)) do
+        resolve fn _, _ -> {:ok, [1, nil, 3]} end
+      end
+
       field :value, :string do
         resolve fn _, resolution ->
           send(resolution.context.test_pid, {:resolved, resolution.definition.alias})
@@ -54,7 +62,7 @@ defmodule Absinthe.Integration.Execution.IncrementalOptionsTest do
           Enum.map(errors, &Map.update!(&1, :message, fn message -> "custom: " <> message end))
         end)
 
-      {:ok, %{blueprint | result: result}}
+      {:ok, %{blueprint | result: Map.put(result, :extensions, %{custom: true})}}
     end
   end
 
@@ -80,12 +88,95 @@ defmodule Absinthe.Integration.Execution.IncrementalOptionsTest do
     end
   end
 
+  defmodule RejectExecution do
+    use Absinthe.Phase
+
+    def run(blueprint, options) do
+      if options[:initial] || blueprint.execution.incremental.frame do
+        {:error, "execution rejected"}
+      else
+        {:ok, blueprint}
+      end
+    end
+  end
+
   setup_all do
     if Schema.__absinthe_schema_provider__() == Absinthe.Schema.PersistentTerm do
       start_supervised!({Absinthe.Schema.Manager, Schema})
     end
 
     :ok
+  end
+
+  test "initial pipeline errors retain the public return and raising contracts" do
+    options = [
+      context: %{test_pid: self()},
+      pipeline_modifier: fn pipeline, _ ->
+        Pipeline.insert_after(
+          pipeline,
+          Absinthe.Incremental.Start,
+          {RejectExecution, initial: true}
+        )
+      end
+    ]
+
+    query = "{ value ... @defer { later: value } }"
+    assert {:error, "execution rejected"} = Absinthe.run_incremental(query, Schema, options)
+
+    assert_raise Absinthe.ExecutionError, "execution rejected", fn ->
+      Absinthe.run_incremental!(query, Schema, options)
+    end
+
+    refute_received {:resolved, _}
+  end
+
+  test "a failed continuation raises without starting later resolvers" do
+    assert {:ok, result} =
+             Absinthe.run_incremental(
+               "{ ready: value ... @defer { first: value } ... @defer { second: value } }",
+               Schema,
+               context: %{test_pid: self()},
+               pipeline_modifier: fn pipeline, _ ->
+                 Pipeline.insert_after(pipeline, Absinthe.Incremental.Start, RejectExecution)
+               end
+             )
+
+    assert result.initial_result.data == %{"ready" => "value"}
+    assert_received {:resolved, "ready"}
+
+    assert_raise Absinthe.ExecutionError, ~s("execution rejected"), fn ->
+      Enum.to_list(result.subsequent_results)
+    end
+
+    refute_received {:resolved, _}
+  end
+
+  test "custom formatting survives failed defer and stream completion packets" do
+    for {query, path, message} <- [
+          {"{ ... @defer { requiredFailure } }", ["requiredFailure"], "unavailable"},
+          {"{ requiredNumbers @stream(initialCount: 1) }", ["requiredNumbers", 1],
+           "Cannot return null for non-nullable field"}
+        ] do
+      assert {:ok, result} =
+               Absinthe.run_incremental(query, Schema,
+                 pipeline_modifier: fn pipeline, _ ->
+                   Pipeline.replace(pipeline, Phase.Document.Result, CustomResult)
+                 end
+               )
+
+      assert result.initial_result.extensions == %{custom: true}
+
+      assert [
+               %{
+                 completed: [%{errors: [error]}],
+                 extensions: %{custom: true},
+                 hasNext: false
+               }
+             ] = Enum.to_list(result.subsequent_results)
+
+      assert error.path == path
+      assert error.message =~ "custom: " <> message
+    end
   end
 
   test "result phase options from a pipeline modifier also format deferred errors" do
