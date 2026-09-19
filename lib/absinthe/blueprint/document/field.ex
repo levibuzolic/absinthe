@@ -35,6 +35,7 @@ defmodule Absinthe.Blueprint.Document.Field do
           source_location: nil | Blueprint.SourceLocation.t(),
           type_conditions: [Blueprint.TypeReference.Name],
           schema_node: Type.t(),
+          field_details: nil | [{t(), Absinthe.Incremental.State.group_ref() | nil}],
           complexity: nil | non_neg_integer
         }
 end
