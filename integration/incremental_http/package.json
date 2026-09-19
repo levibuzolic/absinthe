@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "apollo:patch": "patch-package --error-on-fail",
+    "client:patch": "patch-package --error-on-fail",
     "format:check": "prettier --check '*.mjs' package.json relay.config.json 'relay/*.js'",
-    "test": "node --test --test-concurrency=1 --test-timeout=30000 client.test.mjs relay.test.mjs",
+    "test": "node --test --test-concurrency=1 --test-timeout=30000 client.test.mjs relay.test.mjs multipart.test.mjs",
     "relay:compile": "relay-compiler --noWatchman"
   },
   "engines": {

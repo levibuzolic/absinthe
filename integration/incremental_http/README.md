@@ -8,9 +8,10 @@ integration/incremental_http/run
 
 Requires Elixir/OTP, Mix/Hex/Rebar, Node.js 24+ and npm. CI pins Node **24.21.0**,
 Elixir **1.19.5** and OTP **28.5**. The runner installs locked dependencies,
-explicitly applies the local Apollo fixes below, compiles with warnings as
-errors, exports Absinthe's SDL, runs the Relay compiler, checks formatting,
-and runs both client suites. Generated SDL and Relay artifacts are ignored.
+explicitly applies the local Apollo and meros fixes below, compiles with warnings
+as errors, exports Absinthe's SDL, runs the Relay compiler, checks formatting,
+and runs both client suites plus parser regressions. Generated SDL and Relay
+artifacts are ignored.
 After setup, `npm test` in this directory runs the HTTP tests.
 
 This is a test-only HTTP adapter. The root Absinthe library has no new transport
@@ -26,7 +27,7 @@ in Absinthe Plug.
 | Apollo Client | **4.3.1**, with the explicit local patch described below |
 | Apollo handler / negotiation | `GraphQL17Alpha9Handler`, `multipart/mixed;incrementalSpec=v0.2` |
 | Relay compiler / runtime | **21.0.1**, source `43eaa2587adad2fb10dbac402d900d035fae2f81` |
-| Relay parser / negotiation | `meros` **1.3.2**, application-defined `multipart/mixed;incrementalSpec=relay` |
+| Relay parser / negotiation | `meros` **1.3.2** with the explicit local parser fix below; application-defined `multipart/mixed;incrementalSpec=relay` |
 | GraphQL client parser | **16.12.0** |
 | Independent execution reference | `graphql-reference` alias for **17.0.0-alpha.9**, source `3283f8adf52e77a47f148ff2f30185c8d11ff0f0` |
 | RxJS / JSON codec | **7.8.2** / Jason **1.4.4** |
@@ -47,7 +48,7 @@ Stock Apollo **4.3.1** has two defects reproduced by this harness:
   promise produces an unhandled `AbortError`.
 
 The runner applies [a version-specific runtime patch](patches/@apollo+client+4.3.1.patch)
-with `npm run apollo:patch`. This is an **unreleased local client fix**, not a
+with `npm run client:patch`. This is an **unreleased local client fix**, not a
 claim that published Apollo 4.3.1 supports these cases. There is no automatic
 postinstall hook. A clean `npm ci --ignore-scripts` restores the stock client;
 the nested-stream and cancellation regressions then fail. Run those checks with:
@@ -70,6 +71,19 @@ for inner prefixes zero and one against both Absinthe and GraphQL.js. Cancellati
 runs with `--unhandled-rejections=strict`, without a rejection handler. It checks
 three Absinthe cancellations and a reference cancellation, socket closure,
 worker termination, and exact resolver traces.
+
+## meros parser fix
+
+Stock `meros` **1.3.2** skips a boundary split across Fetch chunks when the
+second chunk also contains another complete boundary. The runner explicitly
+applies a [local browser parser fix](meros-fix/README.md) that searches the
+accumulated buffer in order. **Relay 21.0.1 itself is unmodified**, but its
+network parser includes this unreleased fix. There is no published fixed
+meros version as of 2026-09-19.
+
+Deterministic parser regressions cover every two-chunk byte split, single-byte
+chunks and a coalesced body, including UTF-8, in both ESM and CommonJS. These
+checks complement HTTP write fragmentation, which cannot control Fetch chunks.
 
 ## What the HTTP tests establish
 
@@ -134,9 +148,10 @@ unsupported-only choices. The Relay negotiation parameter is application-defined
 
 ## Verification limits
 
-The clean-install runner passed **54 tests** locally on 2026-09-19: **29 Relay/mixed-client**
-and **25 locally patched Apollo**, with no failures or skips, using the pinned
-runtimes. Compilation and formatting checks also passed.
+The clean-install runner passed **56 tests** locally on 2026-09-19: **29 Relay/mixed-client
+HTTP**, **25 locally patched Apollo HTTP**, and **2 deterministic multipart-parser
+tests**, with no failures or skips, using the pinned runtimes. Compilation and
+formatting checks also passed.
 
 The GitHub Actions workflow runs this harness for pull requests and pushes to
 main. Local verification does not imply that a remote CI run has completed.
@@ -146,4 +161,4 @@ in the [design and verification notes](../../INCREMENTAL_DELIVERY_PLAN.md).
 This suite does not certify a production Absinthe Plug adapter, browsers,
 reverse proxies, compression, HTTP/2, SSE, WebSockets or general socket
 backpressure. It verifies the listed client versions and formats over the
-local test transport; Apollo verification includes the explicit local patch.
+local test transport; verification includes the explicit Apollo and meros patches.

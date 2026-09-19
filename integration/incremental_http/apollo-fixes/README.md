@@ -21,7 +21,7 @@ npx tsc --noEmit --project tsconfig.json
 
 The [runtime patch](../patches/@apollo+client+4.3.1.patch) contains the matching
 emitted ESM and CommonJS changes. The harness installs the exact npm package
-from its lockfile and applies this patch explicitly with `npm run apollo:patch`.
+from its lockfile and applies this patch explicitly with `npm run client:patch`.
 It does not replace Apollo's parser, link or cache. Source maps remain those
 of the released package; use the source build when debugging the changed code.
 

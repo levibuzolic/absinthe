@@ -7,7 +7,7 @@ export MIX_ENV=test
 
 mix deps.get --check-locked
 npm ci --ignore-scripts
-npm run apollo:patch
+npm run client:patch
 mix compile --warnings-as-errors
 mix format --check-formatted
 mix absinthe.schema.sdl --schema IncrementalHTTP.Schema relay/schema.graphql
