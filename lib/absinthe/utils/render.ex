@@ -41,6 +41,43 @@ defmodule Absinthe.Utils.Render do
     ~s(") <> escape_string(string) <> ~s(")
   end
 
+  def render_scalar_value(nil), do: "null"
+  def render_scalar_value(value) when is_binary(value), do: render_quoted_string(value)
+
+  def render_scalar_value(value) when is_list(value) do
+    "[" <> Enum.map_join(value, ", ", &render_scalar_value/1) <> "]"
+  end
+
+  def render_scalar_value(value) when is_map(value) and not is_struct(value) do
+    fields =
+      value
+      |> Enum.reduce(%{}, fn {key, value}, fields ->
+        key = scalar_key(key)
+
+        if Map.has_key?(fields, key) do
+          raise ArgumentError, "Duplicate scalar default object key #{inspect(key)}"
+        end
+
+        Map.put(fields, key, value)
+      end)
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map_join(", ", fn {key, value} -> "#{key}: #{render_scalar_value(value)}" end)
+
+    "{" <> fields <> "}"
+  end
+
+  def render_scalar_value(value), do: inspect(value)
+
+  defp scalar_key(key) do
+    if (is_atom(key) or is_binary(key)) and
+         Regex.match?(~r/\A[_A-Za-z][_0-9A-Za-z]*\z/, to_string(key)) do
+      to_string(key)
+    else
+      raise ArgumentError,
+            "Cannot render scalar default object key #{inspect(key)}: expected a GraphQL Name"
+    end
+  end
+
   @escaped_chars [?", ?\\, ?/, ?\b, ?\f, ?\n, ?\r, ?\t]
 
   defp escape_string(string) do
