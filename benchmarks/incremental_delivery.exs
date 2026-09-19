@@ -108,7 +108,7 @@ end
 
 IO.puts("format | scenario | groups | continuation ms | delivered top-level data fields")
 
-for format <- [:draft, :relay], group_count <- [10, 100, 500] do
+for format <- [:graphql_draft, :relay], group_count <- [10, 100, 500] do
   {[_initial, continuation], fields} =
     median.(sibling_query.(group_count), %{value: 1}, incremental_format: format)
 

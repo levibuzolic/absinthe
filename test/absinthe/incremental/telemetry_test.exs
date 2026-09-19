@@ -44,7 +44,7 @@ defmodule Absinthe.Incremental.TelemetryTest do
   end
 
   test "operation telemetry ends with the initial result while field telemetry follows demand" do
-    for format <- [:draft, :relay] do
+    for format <- [:graphql_draft, :relay] do
       result = execute(format)
       assert_initial_events()
 
@@ -59,7 +59,7 @@ defmodule Absinthe.Incremental.TelemetryTest do
   end
 
   test "halting the continuation leaves later field spans unstarted" do
-    for format <- [:draft, :relay] do
+    for format <- [:graphql_draft, :relay] do
       result =
         Absinthe.run_incremental!(
           """

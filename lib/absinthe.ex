@@ -96,7 +96,7 @@ defmodule Absinthe do
           variables: %{optional(String.t()) => any()},
           max_complexity: non_neg_integer | :infinity,
           pipeline_modifier: pipeline_modifier_fun(),
-          incremental_format: :draft | :relay
+          incremental_format: :graphql_draft | :relay
         ]
 
   @type run_result :: {:ok, result_t} | {:error, String.t()}
@@ -149,8 +149,9 @@ defmodule Absinthe do
   `Absinthe.Type.BuiltIns.IncrementalDirectives` to expose `@defer` and `@stream`.
   This API accepts the same options as `run/3`, plus `:incremental_format`:
 
-  * `:draft` (default) returns the ID-based protocol described in
-    `Absinthe.Incremental`.
+  * `:graphql_draft` (default) returns the GraphQL proposal #1110 ID-based
+    protocol described in `Absinthe.Incremental`, supported by Apollo's
+    `GraphQL17Alpha9Handler`.
   * `:relay` returns labeled responses for Relay-compiled operations, with
     indexed stream items and `extensions.is_final` completion markers.
     Configure Relay's environment with `deferDeduplicatedFields: true` and an

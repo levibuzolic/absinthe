@@ -89,8 +89,8 @@ defmodule IncrementalHTTP.Bridge do
         "eager" ->
           Absinthe.run!(request["query"], IncrementalHTTP.Schema, options)
 
-        format when format in ["draft", "relay"] ->
-          format = if format == "relay", do: :relay, else: :draft
+        format when format in ["graphql_draft", "relay"] ->
+          format = if format == "relay", do: :relay, else: :graphql_draft
           options = Keyword.put(options, :incremental_format, format)
 
           options =

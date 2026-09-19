@@ -7,8 +7,10 @@ defmodule Absinthe.Incremental do
   Halting enumeration leaves later work unexecuted. Consume the enumerable once;
   enumerating it again repeats that work.
 
-  The default response format follows GraphQL spec proposal #1110, revision
-  `045e19363c2b55f127960bd3b5e8072a15b29aec`, which remains a draft.
+  The default `:graphql_draft` response format follows GraphQL spec proposal #1110
+  at revision `045e19363c2b55f127960bd3b5e8072a15b29aec`, which remains a draft.
+  It supports Apollo's `GraphQL17Alpha9Handler` (`incrementalSpec=v0.2`);
+  the older `Defer20220824Handler` / `GraphQL17Alpha2Handler` format is unsupported.
   `Absinthe.run_incremental/3` also accepts `incremental_format: :relay` for
   Relay's labeled response format.
   """
@@ -24,10 +26,10 @@ defmodule Absinthe.Incremental do
 
   @doc false
   def run(document, schema, options) do
-    format = Keyword.get(options, :incremental_format, :draft)
+    format = Keyword.get(options, :incremental_format, :graphql_draft)
 
-    unless format in [:draft, :relay] do
-      raise ArgumentError, "expected :incremental_format to be :draft or :relay"
+    unless format in [:graphql_draft, :relay] do
+      raise ArgumentError, "expected :incremental_format to be :graphql_draft or :relay"
     end
 
     modifier = options[:pipeline_modifier] || fn pipeline, _ -> pipeline end
@@ -69,7 +71,7 @@ defmodule Absinthe.Incremental do
 
       result =
         case format do
-          :draft ->
+          :graphql_draft ->
             subsequent = Stream.unfold(blueprint, &Delivery.next(&1, pipeline))
             %__MODULE__{initial_result: initial, subsequent_results: subsequent}
 
@@ -83,6 +85,6 @@ defmodule Absinthe.Incremental do
     end
   end
 
-  defp ordinary_result(result, :draft), do: result
+  defp ordinary_result(result, :graphql_draft), do: result
   defp ordinary_result(result, :relay), do: Absinthe.Incremental.Relay.final(result)
 end

@@ -43,7 +43,7 @@ defmodule Absinthe.Incremental.InputTest do
     assert Absinthe.run!(document, Schema, options) ==
              Absinthe.run!(query, Schema, options)
 
-    for format <- [:draft, :relay] do
+    for format <- [:graphql_draft, :relay] do
       options = Keyword.put(options, :incremental_format, format)
 
       assert payloads(Absinthe.run_incremental!(document, Schema, options)) ==

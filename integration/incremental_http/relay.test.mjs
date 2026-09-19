@@ -93,7 +93,7 @@ test("Relay and Apollo negotiate independent formats on the same endpoint", asyn
   assert.equal(relayInitial.data.hero.id, "1");
   assert.deepEqual(data(apolloInitial), { hero: { id: "1" } });
   assert.equal(server.sessions.get(relay.id).mode, "relay");
-  assert.equal(server.sessions.get(apollo.id).mode, "draft");
+  assert.equal(server.sessions.get(apollo.id).mode, "graphql_draft");
   assert.ok(!("pending" in relay.raw[0]));
   assert.equal(apollo.raw[0].pending.length, 1);
 

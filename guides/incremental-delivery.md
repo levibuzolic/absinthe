@@ -254,11 +254,13 @@ to Absinthe Plug.
 
 ## Select a client format
 
-One schema can serve both clients. Select the response format for each request:
+One schema can serve both clients. Select the response format for each request.
+The default `:graphql_draft` format targets proposal #1110 at the revision pinned
+above; its supported Apollo protocol is `GraphQL17Alpha9Handler` / `incrementalSpec=v0.2`.
 
-| Client | Execution option | Response format |
+| Tested client | Execution option | Response format |
 | --- | --- | --- |
-| Apollo `GraphQL17Alpha9Handler` | `incremental_format: :draft` (default) | IDs with `pending`, `incremental`, `completed` and `hasNext` |
+| Apollo Client 4.3.1, `GraphQL17Alpha9Handler` | `incremental_format: :graphql_draft` (default) | IDs with `pending`, `incremental`, `completed` and `hasNext` |
 | Relay 21.0.1 | `incremental_format: :relay` | Labeled `data`/`path` patches and `extensions.is_final` |
 
 Both formats use the same directive validation, field collection and execution.
@@ -281,8 +283,8 @@ const client = new ApolloClient({
 
 The handler advertises `multipart/mixed;incrementalSpec=v0.2`. The transport must
 negotiate that protocol and stream each Absinthe payload as a multipart part.
-Apollo's older `Defer20220824Handler` and `GraphQL17Alpha2Handler` use a different
-wire format; use `GraphQL17Alpha9Handler` for this endpoint. See
+Apollo's `Defer20220824Handler` and `GraphQL17Alpha2Handler` are aliases for the
+same older wire format (`deferSpec=20220824`), which is not supported. See
 [Apollo's handler documentation](https://www.apollographql.com/docs/react/data/defer)
 and [incremental v0.2](https://specs.apollo.dev/incremental/v0.2/).
 The two Apollo client fixes described above remain necessary for nested streams
