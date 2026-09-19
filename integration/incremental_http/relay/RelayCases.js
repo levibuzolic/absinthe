@@ -86,6 +86,44 @@ export const inner = graphql`
   }
 `;
 
+export const lateWork = graphql`
+  query RelayCasesLateWorkQuery {
+    person {
+      id
+      ...RelayCases_lateOuter @defer
+    }
+  }
+`;
+export const lateOuter = graphql`
+  fragment RelayCases_lateOuter on Person {
+    ...RelayCases_lateInner @defer
+    friend {
+      id
+      ...RelayCases_lateOuterLeaf @defer
+    }
+  }
+`;
+export const lateInner = graphql`
+  fragment RelayCases_lateInner on Person {
+    friend {
+      age
+      ...RelayCases_lateInnerLeaf @defer
+    }
+  }
+`;
+export const lateInnerLeaf = graphql`
+  fragment RelayCases_lateInnerLeaf on Person {
+    name
+    id
+  }
+`;
+export const lateOuterLeaf = graphql`
+  fragment RelayCases_lateOuterLeaf on Person {
+    name
+    id
+  }
+`;
+
 export const failure = graphql`
   query RelayCasesFailureQuery {
     person {

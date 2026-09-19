@@ -151,8 +151,8 @@ defmodule Absinthe.Incremental.Delivery do
   end
 
   def announce(state) do
-    refs = Enum.sort(state.unannounced)
-    state = %{state | unannounced: []}
+    refs = :gb_sets.to_list(state.unannounced)
+    state = %{state | unannounced: :gb_sets.empty()}
 
     {notices, state} =
       Enum.reduce(refs, {[], state}, fn ref, {notices, state} ->

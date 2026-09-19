@@ -13,6 +13,7 @@ defmodule Absinthe.Incremental.LifecycleTest do
       field :name, :string
       field :age, :integer
       field :other, :string
+      field :child, :person
 
       field :observed_name, :string do
         resolve fn source, _, %{context: %{test_pid: pid}} ->
@@ -110,6 +111,81 @@ defmodule Absinthe.Incremental.LifecycleTest do
         refute Map.has_key?(completion, :errors)
       end
     end
+  end
+
+  test "an initially empty group is announced when a shared object's children add work" do
+    inner_fields = """
+      child { observedName ... @defer(label: "innerLeaf") { age name } }
+    """
+
+    outer = "child { name ... @defer(label: \"outerLeaf\") { age name } }"
+    child = %{name: "Ada", age: 37}
+    expected = %{"child" => %{"name" => "Ada", "age" => 37, "observedName" => "Ada"}}
+
+    for {inner, fragment} <- [
+          {"... @defer(label: \"inner\") { #{inner_fields} }", ""},
+          {"...Inner @defer(label: \"inner\")", "fragment Inner on Person { #{inner_fields} }"}
+        ],
+        selections <- [[inner, outer], [outer, inner]],
+        {field, source, data, calls} <- [
+          {"entry: person", %{child: child}, %{"entry" => expected}, 1},
+          {"entries: people", [%{child: child}, %{child: child}],
+           %{"entries" => [expected, expected]}, 2},
+          {"entries: people @stream(initialCount: 1)", [%{child: child}, %{child: nil}],
+           %{"entries" => [expected, %{"child" => nil}]}, 1}
+        ] do
+      query = """
+      { #{field} { ... @defer(label: "outer") { #{Enum.join(selections, " ")} } } }
+      #{fragment}
+      """
+
+      assert {:ok, result} =
+               Absinthe.run_incremental(query, Schema,
+                 root_value: %{person: source, people: source},
+                 context: %{test_pid: self()}
+               )
+
+      refute_received :observed_name_resolved
+      assert {^data, payloads} = Incremental.consume(result)
+
+      assert calls ==
+               Enum.count(Enum.flat_map(payloads, &Map.get(&1, :pending, [])), fn notice ->
+                 notice[:label] == "inner"
+               end)
+
+      for _ <- 1..calls, do: assert_received(:observed_name_resolved)
+      refute_received :observed_name_resolved
+    end
+  end
+
+  test "a failure cancels work added to an initially empty group before announcing it" do
+    query = """
+    { person {
+      ... @defer(label: "outer") {
+        ... @defer(label: "inner") { child { observedName } }
+        child { name requiredFailure }
+      }
+    } }
+    """
+
+    assert {:ok, result} =
+             Absinthe.run_incremental(query, Schema,
+               root_value: %{person: %{child: %{name: "Ada"}}},
+               context: %{test_pid: self()}
+             )
+
+    assert {%{"person" => %{"child" => nil}}, payloads} = Incremental.consume(result)
+    assert [%{label: "outer"}] = Enum.flat_map(payloads, &Map.get(&1, :pending, []))
+
+    assert [%{message: "failed", path: ["person", "child", "requiredFailure"]}] =
+             for(
+               payload <- payloads,
+               entry <- Map.get(payload, :incremental, []),
+               error <- Map.get(entry, :errors, []),
+               do: Map.take(error, [:message, :path])
+             )
+
+    refute_received :observed_name_resolved
   end
 
   test "initial formatter redaction prunes deferred children without execution errors", %{
