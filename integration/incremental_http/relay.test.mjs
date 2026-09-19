@@ -18,6 +18,7 @@ import ConnectionQuery from "./relay/__generated__/RelayConnectionQuery.graphql.
 import DeferQuery from "./relay/__generated__/RelayDeferQuery.graphql.js";
 import FailureQuery from "./relay/__generated__/RelayCasesFailureQuery.graphql.js";
 import FatalQuery from "./relay/__generated__/RelayCasesFatalQuery.graphql.js";
+import LateWorkQuery from "./relay/__generated__/RelayCasesLateWorkQuery.graphql.js";
 import NestedQuery from "./relay/__generated__/RelayCasesNestedQuery.graphql.js";
 import NestedStreamsQuery from "./relay/__generated__/RelayCasesNestedStreamsQuery.graphql.js";
 import NullEdgeConnectionQuery from "./relay/__generated__/RelayConnectionQueryNullEdgeQuery.graphql.js";
@@ -39,6 +40,10 @@ import Details from "./relay/__generated__/RelayDeferQuery_details.graphql.js";
 import Failure from "./relay/__generated__/RelayCases_failure.graphql.js";
 import Friends from "./relay/__generated__/RelayCases_friends.graphql.js";
 import Inner from "./relay/__generated__/RelayCases_inner.graphql.js";
+import LateInner from "./relay/__generated__/RelayCases_lateInner.graphql.js";
+import LateInnerLeaf from "./relay/__generated__/RelayCases_lateInnerLeaf.graphql.js";
+import LateOuter from "./relay/__generated__/RelayCases_lateOuter.graphql.js";
+import LateOuterLeaf from "./relay/__generated__/RelayCases_lateOuterLeaf.graphql.js";
 import Name from "./relay/__generated__/RelayCases_name.graphql.js";
 import NodeA from "./relay/__generated__/RelayCases_nodeA.graphql.js";
 import NodeB from "./relay/__generated__/RelayCases_nodeB.graphql.js";
@@ -315,6 +320,72 @@ test("a no-work deferred ancestor still creates Relay's nested placeholder", asy
   const inner = client.fragment(Inner, outer.data);
   assert.equal(inner.isMissingData, false);
   assert.equal(inner.data.name, "Ada");
+});
+
+test("a deferred group acquires its first work when an outer linked field resolves", async (t) => {
+  const client = observeRelay(server, t, LateWorkQuery);
+  const initial = await client.initial();
+  assert.equal(initial.data.person.id, "1");
+  assert.equal(
+    client.fragment(LateOuter, initial.data.person).isMissingData,
+    true,
+  );
+  assert.deepEqual(paths(client.id), [["person"], ["person", "id"]]);
+
+  await client.next();
+  const outer = client.fragment(LateOuter, client.read().data.person);
+  assert.equal(outer.isMissingData, false);
+  assert.equal(outer.data.friend.id, "2");
+  assert.equal(client.fragment(LateInner, outer.data).isMissingData, true);
+  assert.equal(
+    client.fragment(LateOuterLeaf, outer.data.friend).isMissingData,
+    true,
+  );
+  assert.deepEqual(paths(client.id), [
+    ["person"],
+    ["person", "id"],
+    ["person", "friend"],
+    ["person", "friend", "id"],
+  ]);
+
+  await client.next();
+  const inner = client.fragment(LateInner, outer.data);
+  assert.equal(inner.isMissingData, false);
+  assert.equal(inner.data.friend.age, 40);
+  assert.equal(
+    client.fragment(LateInnerLeaf, inner.data.friend).isMissingData,
+    true,
+  );
+  assert.deepEqual(paths(client.id).at(-1), ["person", "friend", "age"]);
+  assert.ok(!paths(client.id).some((path) => path.at(-1) === "name"));
+
+  const final = await client.finish();
+  const finalOuter = client.fragment(LateOuter, final.data.person);
+  const finalInner = client.fragment(LateInner, finalOuter.data);
+  for (const [fragment, reference] of [
+    [LateOuterLeaf, finalOuter.data.friend],
+    [LateInnerLeaf, finalInner.data.friend],
+  ]) {
+    const leaf = client.fragment(fragment, reference);
+    assert.equal(leaf.isMissingData, false);
+    assert.deepEqual(leaf.data, { name: "Grace", id: "2" });
+  }
+  assert.equal(
+    paths(client.id).filter((path) => path.at(-1) === "name").length,
+    1,
+  );
+  assert.deepEqual(
+    client.raw
+      .filter((payload) => payload.label)
+      .map((payload) => payload.label),
+    [
+      "RelayCasesLateWorkQuery$defer$RelayCases_lateOuter",
+      "RelayCases_lateOuter$defer$RelayCases_lateInner",
+      "RelayCases_lateInner$defer$RelayCases_lateInnerLeaf",
+      "RelayCases_lateOuter$defer$RelayCases_lateOuterLeaf",
+    ],
+  );
+  assert.equal(client.raw.at(-1).extensions.is_final, true);
 });
 
 test("nullable deferred field errors keep data and use patch-relative error paths", async (t) => {

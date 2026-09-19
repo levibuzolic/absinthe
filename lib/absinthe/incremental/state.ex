@@ -49,7 +49,7 @@ defmodule Absinthe.Incremental.State do
             next_job: 0,
             groups: %{},
             group_ids: %{},
-            unannounced: [],
+            unannounced: :gb_sets.empty(),
             next_frame: 0,
             frame: nil,
             waiting: %{},
@@ -63,7 +63,7 @@ defmodule Absinthe.Incremental.State do
           next_job: non_neg_integer(),
           groups: %{optional(group_ref()) => group()},
           group_ids: %{optional(String.t()) => group_ref()},
-          unannounced: [group_ref()],
+          unannounced: :gb_sets.set(group_ref()),
           next_frame: non_neg_integer(),
           frame: work() | nil,
           waiting: %{optional(dependency()) => [group_ref()]},
@@ -97,7 +97,7 @@ defmodule Absinthe.Incremental.State do
      %{
        state
        | groups: Map.put(state.groups, ref, group),
-         unannounced: [ref | state.unannounced]
+         unannounced: :gb_sets.add(ref, state.unannounced)
      }}
   end
 
@@ -222,8 +222,12 @@ defmodule Absinthe.Incremental.State do
   @spec wake(t(), dependency()) :: t()
   def wake(state, dependency) do
     case Map.pop(state.waiting, dependency) do
-      {nil, _} -> state
-      {refs, waiting} -> %{state | waiting: waiting, unannounced: refs ++ state.unannounced}
+      {nil, _} ->
+        state
+
+      {refs, waiting} ->
+        unannounced = Enum.reduce(refs, state.unannounced, &:gb_sets.add/2)
+        %{state | waiting: waiting, unannounced: unannounced}
     end
   end
 
@@ -235,10 +239,20 @@ defmodule Absinthe.Incremental.State do
     Enum.reduce(groups, state, fn ref, state ->
       group = state.groups[ref]
 
-      jobs =
+      {jobs, unannounced} =
         case action do
-          :add -> MapSet.put(group.jobs, id)
-          :remove -> MapSet.delete(group.jobs, id)
+          :add ->
+            # A group can first acquire work while completing a shared object
+            # selected by an earlier group, after the initial announcement pass.
+            unannounced =
+              if is_nil(group.id) and MapSet.size(group.jobs) == 0,
+                do: :gb_sets.add(ref, state.unannounced),
+                else: state.unannounced
+
+            {MapSet.put(group.jobs, id), unannounced}
+
+          :remove ->
+            {MapSet.delete(group.jobs, id), state.unannounced}
         end
 
       finished = MapSet.size(jobs) == 0
@@ -251,6 +265,7 @@ defmodule Absinthe.Incremental.State do
       state = %{
         state
         | groups: Map.put(state.groups, ref, %{group | jobs: jobs}),
+          unannounced: unannounced,
           completion_candidates: candidates
       }
 
