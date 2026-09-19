@@ -401,10 +401,9 @@ defmodule Absinthe.Type.BuiltIns.Introspection do
         render_default_value(schema, adapter, type, value)
 
       %Absinthe.Type.Scalar{} = sc ->
-        case Absinthe.Type.Scalar.serialize(sc, value) do
-          string when is_binary(string) -> Absinthe.Utils.Render.render_quoted_string(string)
-          scalar -> inspect(scalar)
-        end
+        sc
+        |> Absinthe.Type.Scalar.serialize(value)
+        |> Absinthe.Utils.Render.render_scalar_value()
     end
   end
 
