@@ -63,6 +63,12 @@ test("Relay compiled defer reconstructs a named fragment", async (t) => {
   assert.ok(!paths(client.id).some((path) => path.at(-1) === "display"));
   const final = await client.finish();
   assert.equal(client.fragment(Details, final.data.hero).data.display, "Ada");
+  for (const payload of client.raw) {
+    assert.deepEqual(payload.extensions, {
+      trace: "preserved",
+      is_final: !payload.hasNext,
+    });
+  }
 });
 
 test("Relay and Apollo negotiate independent formats on the same endpoint", async (t) => {

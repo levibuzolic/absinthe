@@ -27,7 +27,9 @@ defmodule Absinthe.Incremental.Relay do
   defp mark(result, final?) do
     result
     |> Map.put(:hasNext, not final?)
-    |> Map.update(:extensions, %{is_final: final?}, &Map.put(&1, :is_final, final?))
+    |> Map.update(:extensions, %{is_final: final?}, fn extensions ->
+      extensions |> Map.delete("is_final") |> Map.put(:is_final, final?)
+    end)
   end
 
   defp next(%{done: true}), do: nil
@@ -73,7 +75,7 @@ defmodule Absinthe.Incremental.Relay do
         true -> packets
       end
 
-    extensions = Map.get(payload, :extensions, %{})
+    extensions = payload |> Map.get(:extensions, %{}) |> Map.delete("is_final")
 
     packets =
       Enum.map(packets, fn packet ->
@@ -192,14 +194,14 @@ defmodule Absinthe.Incremental.Relay do
   defp snapshot(value) when is_list(value),
     do: {:list, value |> Enum.map(&snapshot/1) |> :array.from_list()}
 
-  defp snapshot(value) when is_map(value),
+  defp snapshot(value) when is_map(value) and not is_struct(value),
     do: Map.new(value, fn {key, child} -> {key, snapshot(child)} end)
 
   defp snapshot(value), do: value
 
   defp restore({:list, values}), do: values |> :array.to_list() |> Enum.map(&restore/1)
 
-  defp restore(value) when is_map(value),
+  defp restore(value) when is_map(value) and not is_struct(value),
     do: Map.new(value, fn {key, child} -> {key, restore(child)} end)
 
   defp restore(value), do: value
