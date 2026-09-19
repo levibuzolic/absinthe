@@ -491,7 +491,11 @@ test("initial non-null errors and invalid variables return ordinary GraphQL erro
       variables: { count: "wrong" },
     },
   );
-  assert.ok((await invalid.finish()).error);
+  const invalidResult = await invalid.finish();
+  assert.equal(
+    invalidResult.error.errors[0].message,
+    'Argument "initialCount" has invalid value $count.',
+  );
   assert.equal(invalid.raw.length, 1);
   assert.ok(!("hasNext" in invalid.raw[0]));
   assert.deepEqual(paths(invalid.id), []);

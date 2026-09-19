@@ -64,7 +64,7 @@ defmodule Absinthe.Phase.Document.Validation.StreamFragmentReuseTest do
       # A generous work budget catches repeated merged-set expansion without
       # depending on machine speed. The original fragment walk used over 12M.
       assert after_count - before < 1_000_000
-      assert {:ok, %{data: %{"node" => nil, "values" => nil}}} = Absinthe.run(query, Schema)
+      assert Absinthe.run(query, Schema) == {:ok, %{data: %{"node" => nil, "values" => nil}}}
     end
   end
 

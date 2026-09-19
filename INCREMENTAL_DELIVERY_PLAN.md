@@ -174,7 +174,7 @@ unqualified claim of literal adherence to every sentence.
 
 ## Test coverage
 
-The branch adds 181 incremental test declarations and three SDL-export regressions.
+The branch adds 183 incremental test declarations and three SDL-export regressions.
 The tests cover:
 
 | Area | Cases and assertions |
@@ -196,6 +196,11 @@ A separate 192-execution matrix exercises mixed synchronous, Async, and Batch
 siblings under non-null failures. It checks expected error paths, resolver
 completion, and identical payloads across sibling orders, nested containers,
 deferred fragments, and streamed items.
+
+Another 24 executions vary container and leaf suspension independently across
+ordinary, draft, and Relay results. Explicit data and aliased error-path oracles
+cover nested nullable list rows and items; complete payload comparisons check
+that changing suspension boundaries preserves delivery behavior.
 
 A separate coverage audit caught all ten representative injected faults:
 incorrect conditions, prefix size and stream indices, missing completion,
@@ -225,10 +230,10 @@ Local checks on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,687 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,687 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,687 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,687 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,689 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,689 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,689 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,689 tests, zero failures, 3 existing exclusions |
 | `mix dialyzer` | Zero errors; ignore entries unchanged |
 | Formatting and `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
