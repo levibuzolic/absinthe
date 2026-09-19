@@ -115,8 +115,9 @@ later work and its telemetry unexecuted.
 
 The list resolver still returns its list once. `@stream` defers completion of
 the remaining items and their fields; it does not turn a database query into a
-cursor or paginate an external data source. The remaining source items are held
-until consumed or the response is discarded.
+cursor or paginate an external data source. Queued work retains the remaining
+source items. Keeping the original response or continuation also keeps its
+initial execution inputs reachable after consumption.
 
 `Absinthe.run/3` retains its ordinary single-result contract and completes valid
 imported directives eagerly. `run_incremental/3` also returns an ordinary map
@@ -231,8 +232,9 @@ At the transport boundary, deliver `initial_result` once, then each yielded
 enumeration after the terminal `hasNext: false` payload or when the client
 disconnects. Handle exceptions raised while enumerating the continuation as
 request or transport failures and stop consuming. Set bounds appropriate for
-your service: the core retains the source list until its continuation is
-consumed or discarded, and Relay formatting retains accumulated snapshots.
+your service: queued work retains its inputs, completed deferred results may
+wait in publication buffers, and Relay formatting retains accumulated snapshots.
+Discard finished responses and continuations when they are no longer needed.
 Stopping pulls does not cancel a resolver already running or detached
 resolver-owned work; cancellation must be handled by the transport or
 application.
@@ -354,6 +356,11 @@ The HTTP harness uses `incrementalSpec=relay` as an application-defined
 negotiation parameter, not a standardized GraphQL HTTP protocol. Production
 transports must explicitly negotiate and select `incremental_format: :relay`;
 the core option does not configure Absinthe Plug or a client network layer.
+The harness runs unmodified Relay 21.0.1 with an explicitly patched meros 1.3.2
+browser parser. Its `integration/incremental_http/meros-fix/README.md` records
+the source and runtime fix.
+Stock meros can skip boundaries spanning Fetch chunks; deterministic parser
+regressions cover that defect separately from the HTTP tests.
 
 ## Draft interpretation
 

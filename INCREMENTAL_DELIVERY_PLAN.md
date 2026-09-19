@@ -53,6 +53,8 @@ The scheduler relies on these invariants:
   groups and streams wait until their containing data is published, including
   when their shared work has already finished. Buffer removal updates every
   owner's live membership together; only publication wakes dependent groups.
+  Publication buffers retain completed payloads and ownership metadata, allowing
+  finished frames' resolver sources to be released.
 - **Runnable jobs follow enqueue order.** An ordered set avoids scanning blocked
   jobs. Group membership tracks queued and running work; frame IDs track
   execution order. Group identities remain available for occurrence ancestry
@@ -65,11 +67,12 @@ The scheduler relies on these invariants:
   plugin pipeline to completion. Context and accumulators persist, and field
   caches distinguish concrete parent types. Pipeline modifiers and result-phase
   options also apply to continuations.
-- **Failures cancel unreachable work.** Nullable errors accompany delivered
+- **Failures cancel unreachable queued work.** Nullable errors accompany delivered
   values. Non-null failures reaching an already-delivered boundary produce
   failed completion notices and discard private data. Failed owners do not
   cancel another owner's surviving selections. Formatter-nullified containers
-  also prune descendants.
+  also prune descendants. This does not interrupt already-running or detached
+  resolver-owned work.
 - **Every announced group completes once.** String IDs identify pending work;
   paths use response aliases and list indices. Each publication pass selects
   completion-ready groups once, publishes their successful values, then emits
@@ -135,6 +138,11 @@ Stream overlap checks follow the pinned field-merging algorithm: direct pairs
 cannot contain a stream, while recursive child sets merge only for matching
 or abstract parent types. Different concrete parent alternatives remain
 independent through deeper child selections.
+Validation caches original selection sets and field pairs instead of enumerating
+merged-set combinations. A bottom-up stream summary excludes ordinary subtrees
+from pair comparisons, including when another part of the document uses a stream.
+The fragment-reuse regression checks a generous reductions budget rather than
+wall-clock timing, covering both nested streams and unrelated ordinary fields.
 
 Reference probes against GraphQL.js revision
 [`ee5ce41d4b68d1852306d3b56dba2cbbb6c43fea`](https://github.com/graphql/graphql-js/tree/ee5ce41d4b68d1852306d3b56dba2cbbb6c43fea)
@@ -166,7 +174,7 @@ unqualified claim of literal adherence to every sentence.
 
 ## Test coverage
 
-The branch adds 179 incremental test declarations and three SDL-export regressions.
+The branch adds 181 incremental test declarations and three SDL-export regressions.
 The tests cover:
 
 | Area | Cases and assertions |
@@ -217,14 +225,14 @@ Local checks on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,685 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,685 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,685 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,685 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,687 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,687 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,687 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,687 tests, zero failures, 3 existing exclusions |
 | `mix dialyzer` | Zero errors; ignore entries unchanged |
 | Formatting and `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
-| Integrated HTTP harness | 54 passed: 29 Relay/mixed-client, 25 locally patched Apollo; no failures or skips |
+| Integrated client harness | 56 passed: 29 Relay/mixed-client HTTP, 25 locally patched Apollo HTTP, 2 deterministic multipart-parser tests; no failures or skips |
 
 Full suites use `mix test --warnings-as-errors`. None of the incremental tests
 is skipped. These local runs do not cover every operating system or CI runtime
@@ -241,7 +249,10 @@ harness explicitly applies a pinned, test-only client patch and includes the
 corresponding source fixes and upstream regression tests. Its tests now require
 correct nested data and cancellation without unhandled rejections. Those tests
 failed on the stock client before the patch. This verifies locally fixed Apollo,
-not the published package. Relay 21.0.1 is unmodified.
+not the published package. Relay 21.0.1 is unmodified; its meros 1.3.2 browser
+parser receives an explicit local fix for boundaries split across Fetch chunks.
+The [parser regression](integration/incremental_http/meros-fix/README.md) fails
+against stock meros and passes with the fix in both ESM and CommonJS.
 
 The harness does not certify a production Absinthe Plug adapter, browsers,
 proxy buffering, HTTP/2, SSE, WebSockets or cancellation of arbitrary
