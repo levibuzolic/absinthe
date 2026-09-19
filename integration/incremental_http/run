@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -eu
+
+cd "$(dirname "$0")"
+export MIX_ENV=test
+
+mix deps.get --check-locked
+npm ci --ignore-scripts
+npm run apollo:patch
+mix compile --warnings-as-errors
+mix format --check-formatted
+mix absinthe.schema.sdl --schema IncrementalHTTP.Schema relay/schema.graphql
+npm run relay:compile
+npm run format:check
+npm test

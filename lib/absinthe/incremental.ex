@@ -7,8 +7,10 @@ defmodule Absinthe.Incremental do
   Halting enumeration leaves later work unexecuted. Consume the enumerable once;
   enumerating it again repeats that work.
 
-  The response format follows GraphQL spec proposal #1110, revision
+  The default response format follows GraphQL spec proposal #1110, revision
   `045e19363c2b55f127960bd3b5e8072a15b29aec`, which remains a draft.
+  `Absinthe.run_incremental/3` also accepts `incremental_format: :relay` for
+  Relay's labeled response format.
   """
 
   alias Absinthe.{Phase, Pipeline}
@@ -21,6 +23,12 @@ defmodule Absinthe.Incremental do
 
   @doc false
   def run(document, schema, options) do
+    format = Keyword.get(options, :incremental_format, :draft)
+
+    unless format in [:draft, :relay] do
+      raise ArgumentError, "expected :incremental_format to be :draft or :relay"
+    end
+
     modifier = options[:pipeline_modifier] || fn pipeline, _ -> pipeline end
 
     pipeline =
@@ -33,16 +41,17 @@ defmodule Absinthe.Incremental do
 
     case Pipeline.run(document, pipeline) do
       {:ok, blueprint, _} ->
-        finish(blueprint, continuation)
+        finish(blueprint, continuation, format)
 
       {:error, error, _} ->
         {:error, error}
     end
   end
 
-  defp finish(%{execution: %{incremental: nil}, result: result}, _), do: {:ok, result}
+  defp finish(%{execution: %{incremental: nil}, result: result}, _, format),
+    do: {:ok, ordinary_result(result, format)}
 
-  defp finish(blueprint, pipeline) do
+  defp finish(blueprint, pipeline, format) do
     state =
       Delivery.prune(
         blueprint.execution.incremental,
@@ -56,10 +65,23 @@ defmodule Absinthe.Incremental do
     if State.pending?(state) do
       blueprint = put_in(blueprint.execution.incremental, state)
       initial = Map.merge(blueprint.result, %{pending: pending, hasNext: true})
-      subsequent = Stream.unfold(blueprint, &Delivery.next(&1, pipeline))
-      {:ok, %__MODULE__{initial_result: initial, subsequent_results: subsequent}}
+
+      result =
+        case format do
+          :draft ->
+            subsequent = Stream.unfold(blueprint, &Delivery.next(&1, pipeline))
+            %__MODULE__{initial_result: initial, subsequent_results: subsequent}
+
+          :relay ->
+            Absinthe.Incremental.Relay.format(initial, blueprint, pipeline)
+        end
+
+      {:ok, result}
     else
-      {:ok, blueprint.result}
+      {:ok, ordinary_result(blueprint.result, format)}
     end
   end
+
+  defp ordinary_result(result, :draft), do: result
+  defp ordinary_result(result, :relay), do: Absinthe.Incremental.Relay.final(result)
 end

@@ -1,0 +1,178 @@
+{
+  "query": "{ people @stream(initialCount: 0) { friends @stream(initialCount: 0) { name } } }",
+  "absinthe": [
+    {
+      "data": {
+        "people": []
+      },
+      "pending": [
+        {
+          "id": "0",
+          "path": [
+            "people"
+          ]
+        }
+      ],
+      "hasNext": true
+    },
+    {
+      "pending": [
+        {
+          "id": "1",
+          "path": [
+            "people",
+            0,
+            "friends"
+          ]
+        }
+      ],
+      "hasNext": true,
+      "incremental": [
+        {
+          "id": "0",
+          "items": [
+            {
+              "__typename": "Person",
+              "friends": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "hasNext": true,
+      "incremental": [
+        {
+          "id": "1",
+          "items": [
+            {
+              "__typename": "Person",
+              "name": "Grace"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "hasNext": true,
+      "incremental": [
+        {
+          "id": "0",
+          "items": [
+            {
+              "__typename": "Person",
+              "friends": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "hasNext": true,
+      "incremental": [
+        {
+          "id": "1",
+          "items": [
+            {
+              "__typename": "Person",
+              "name": "Edsger"
+            }
+          ]
+        }
+      ],
+      "completed": [
+        {
+          "id": "1"
+        }
+      ]
+    },
+    {
+      "hasNext": false,
+      "incremental": [
+        {
+          "id": "0",
+          "items": [
+            {
+              "__typename": "Person",
+              "friends": null
+            }
+          ]
+        }
+      ],
+      "completed": [
+        {
+          "id": "0"
+        }
+      ]
+    }
+  ],
+  "graphql_17_alpha_9": [
+    {
+      "data": {
+        "people": []
+      },
+      "pending": [
+        {
+          "id": "0",
+          "path": [
+            "people"
+          ]
+        }
+      ],
+      "hasNext": true
+    },
+    {
+      "hasNext": false,
+      "pending": [
+        {
+          "id": "1",
+          "path": [
+            "people",
+            0,
+            "friends"
+          ]
+        }
+      ],
+      "incremental": [
+        {
+          "id": "0",
+          "items": [
+            {
+              "friends": [],
+              "__typename": "Person"
+            },
+            {
+              "friends": null,
+              "__typename": "Person"
+            },
+            {
+              "friends": null,
+              "__typename": "Person"
+            }
+          ]
+        },
+        {
+          "id": "1",
+          "items": [
+            {
+              "name": "Grace",
+              "__typename": "Person"
+            },
+            {
+              "name": "Edsger",
+              "__typename": "Person"
+            }
+          ]
+        }
+      ],
+      "completed": [
+        {
+          "id": "0"
+        },
+        {
+          "id": "1"
+        }
+      ]
+    }
+  ]
+}
