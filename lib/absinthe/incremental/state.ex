@@ -45,6 +45,12 @@ defmodule Absinthe.Incremental.State do
           optional(:extensions) => map()
         }
 
+  @typep buffered_frame :: %{
+           required(:ref) => non_neg_integer(),
+           required(:groups) => MapSet.t(group_ref()),
+           required(:path) => [emitter() | non_neg_integer()]
+         }
+
   defstruct jobs: %{},
             ready: :gb_sets.empty(),
             next_job: 0,
@@ -69,7 +75,7 @@ defmodule Absinthe.Incremental.State do
           frame: work() | nil,
           waiting: %{optional(dependency()) => [group_ref()]},
           completion_candidates: :gb_sets.set(group_ref()),
-          buffered: %{optional(non_neg_integer()) => {work(), map()}}
+          buffered: %{optional(non_neg_integer()) => {buffered_frame(), map()}}
         }
 
   # Group identities outlive their notices: queued occurrences can still refer
@@ -163,6 +169,9 @@ defmodule Absinthe.Incremental.State do
           state = change_memberships(state, job.groups, id, :remove)
           %{state | jobs: Map.delete(state.jobs, id), ready: :gb_sets.delete_any(id, state.ready)}
 
+        ^job ->
+          state
+
         retained ->
           removed = MapSet.difference(job.groups, retained.groups)
           state = change_memberships(state, removed, id, :remove)
@@ -179,19 +188,27 @@ defmodule Absinthe.Incremental.State do
 
   defp announced?(state, job), do: Enum.any?(job.groups, &(state.groups[&1].id != nil))
 
-  @spec buffer(t(), work(), map()) :: t()
+  @spec buffer(t(), work() | buffered_frame(), map()) :: t()
   def buffer(state, frame, result) do
     groups =
       Enum.reduce(frame.groups, state.groups, fn ref, groups ->
         Map.update!(groups, ref, &%{&1 | buffered: MapSet.put(&1.buffered, frame.ref)})
       end)
 
-    %{state | groups: groups, buffered: Map.put(state.buffered, frame.ref, {frame, result})}
+    # Publication needs only identity, ownership, and path. Finished resolver
+    # sources can be large and must not live as long as a group's private data.
+    buffered_frame = Map.take(frame, [:ref, :groups, :path])
+
+    %{
+      state
+      | groups: groups,
+        buffered: Map.put(state.buffered, frame.ref, {buffered_frame, result})
+    }
   end
 
   # Owner memberships contain only live buffers. Removing a buffer is separate
   # from publishing it: discarded data must not wake its dependent groups.
-  @spec pop_buffer(t(), non_neg_integer()) :: {{work(), map()}, t()}
+  @spec pop_buffer(t(), non_neg_integer()) :: {{buffered_frame(), map()}, t()}
   def pop_buffer(state, ref) do
     {{frame, result}, buffered} = Map.pop!(state.buffered, ref)
 
