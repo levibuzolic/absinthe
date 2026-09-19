@@ -55,7 +55,7 @@ defmodule Absinthe.Incremental.NestedSuspensionTest do
   end
 
   test "deferred aliased matrices preserve complete draft and Relay payloads under suspension" do
-    for format <- [:draft, :relay], do: assert_suspension_boundaries(format)
+    for format <- [:graphql_draft, :relay], do: assert_suspension_boundaries(format)
   end
 
   defp assert_suspension_boundaries(format) do
@@ -90,7 +90,7 @@ defmodule Absinthe.Incremental.NestedSuspensionTest do
               assert_errors(result.errors, relative_errors, ["n"])
               [result]
 
-            :draft ->
+            :graphql_draft ->
               assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
 
               assert {^expected_data, payloads} =

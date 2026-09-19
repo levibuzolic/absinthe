@@ -65,7 +65,7 @@ function negotiate(accept = "*/*") {
   // Relay is an application-defined opt-in for this test adapter.
   let mode;
   if (protocols.has("relay")) mode = "relay";
-  else if (protocols.has("v0.2")) mode = "draft";
+  else if (protocols.has("v0.2")) mode = "graphql_draft";
   else if (json) mode = "eager";
   else return null;
   return {

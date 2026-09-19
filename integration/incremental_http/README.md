@@ -32,7 +32,10 @@ in Absinthe Plug.
 | Independent execution reference | `graphql-reference` alias for **17.0.0-alpha.9**, source `3283f8adf52e77a47f148ff2f30185c8d11ff0f0` |
 | RxJS / JSON codec | **7.8.2** / Jason **1.4.4** |
 
-Apollo receives Absinthe's default ID-based envelopes. Relay receives the core's
+Apollo receives Absinthe's default `incremental_format: :graphql_draft` ID-based
+envelopes. Only `GraphQL17Alpha9Handler` / `incrementalSpec=v0.2` is supported;
+the older `Defer20220824Handler` / `GraphQL17Alpha2Handler` format is unsupported.
+Relay receives the core's
 `incremental_format: :relay` format. The client network layers forward patches
 without translating them or repairing client data. The GraphQL.js reference
 cross-checks client regressions; it is not the Absinthe server or a claim that
