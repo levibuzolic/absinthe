@@ -28,7 +28,6 @@ defmodule Absinthe.Incremental.State do
           id: nil,
           done: false,
           parent: nil,
-          label: nil,
           owner: owner,
           jobs: MapSet.new(),
           buffered: []

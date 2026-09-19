@@ -107,7 +107,7 @@ defmodule Absinthe.Incremental.Relay do
           {values, packets, true}
         else
           packet =
-            %{data: item, label: group.label, path: path}
+            %{data: item, label: Map.get(group, :label), path: path}
             |> with_errors(relative_errors(item_errors, path))
             |> continuing()
 
@@ -137,7 +137,11 @@ defmodule Absinthe.Incremental.Relay do
       {packets, state} = defer_packets(group.parent, packets, state)
 
       packet =
-        %{data: restore(fetch(state.data, group.path)), path: group.path, label: group.label}
+        %{
+          data: restore(fetch(state.data, group.path)),
+          path: group.path,
+          label: Map.get(group, :label)
+        }
         |> with_errors(relative_errors(state.errors, group.path))
         |> continuing()
 

@@ -2,7 +2,11 @@
 
 This implementation targets [GraphQL spec PR #1110](https://github.com/graphql/graphql-spec/pull/1110)
 at revision [`045e19363c2b55f127960bd3b5e8072a15b29aec`](https://github.com/graphql/graphql-spec/tree/045e19363c2b55f127960bd3b5e8072a15b29aec).
-The proposal remains a draft. The [usage guide](guides/incremental-delivery.md)
+Verified on 2026-09-19: this is still the head of the open RFC Stage 2 proposal.
+The latest published GraphQL specification is [September 2025](https://github.com/graphql/graphql-spec/releases/tag/September2025),
+which does not include these directives. [PR #1234](https://github.com/graphql/graphql-spec/pull/1234)
+extracts field collection from #1110 for review; it does not supersede the target.
+The [usage guide](guides/incremental-delivery.md)
 documents schema opt-in, execution APIs, response shapes, and transport integration.
 
 ## Scope
@@ -112,9 +116,31 @@ confirmed shared-work survival, withholding private data until an owner succeeds
 and cancellation through owning parents. Dedicated conformance tests preserve
 those cases; the probes are not a claim of exhaustive equivalence.
 
+## Conformance coverage
+
+The default `:draft` response format follows the proposal's ID-based contract and
+is consumed by Apollo's `GraphQL17Alpha9Handler`. Relay's format is selected per
+request and adapts that execution to its labeled protocol. The HTTP suite keeps
+both clients connected to the same endpoint and checks independent formatting,
+normalization and continuation demand.
+
+| Draft requirement | Representative executable coverage |
+| --- | --- |
+| Directive types, defaults and ordinary coercion | `incremental_directives_test.exs`, `incremental_coercion_test.exs`, SDL-render tests |
+| Document-unique literal labels, operation/root restrictions, overlapping streams | `validation/incremental_test.exs`, `incremental_subscription_test.exs` |
+| Shared/ancestor field ownership and applicable fragments | `incremental_conformance_test.exs`, `abstract_types_test.exs`, the 768-case collection matrix |
+| Stream prefixes and nullable/non-null list boundaries | `incremental_delivery_test.exs`, `execution_test.exs`, `suspended_failure_test.exs` |
+| Serial mutation roots across suspension | `mutation_order_test.exs`, compiled Relay mutation HTTP cases |
+| Atomic publication, failed completions and owning-parent cancellation | `buffering_test.exs`, `lifecycle_test.exs`, `cancellation_test.exs` |
+| Pending IDs, paths, explicit-null labels, updates, completion and terminal state | Public delivery tests, consumer assertions, both real-client HTTP suites |
+
+These cases verify concrete requirements against the pinned draft. They are not
+a formal proof, and the two contradictory passages described above prevent an
+unqualified claim of literal adherence to every sentence.
+
 ## Test coverage
 
-The branch adds 155 incremental test declarations and two SDL-export regressions.
+The branch adds 158 incremental test declarations and two SDL-export regressions.
 The tests cover:
 
 | Area | Cases and assertions |
@@ -149,14 +175,14 @@ Local checks on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,660 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,660 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,660 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,660 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,663 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,663 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,663 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,663 tests, zero failures, 3 existing exclusions |
 | `mix dialyzer` | Zero errors; ignore entries unchanged |
 | Formatting and `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
-| Integrated HTTP harness | 49 passed: 26 Relay, 23 locally patched Apollo; no failures or skips |
+| Integrated HTTP harness | 52 passed: 27 Relay/mixed-client, 25 locally patched Apollo; no failures or skips |
 
 Full suites use `mix test --warnings-as-errors`. None of the incremental tests
 is skipped. These local runs do not cover every operating system or CI runtime

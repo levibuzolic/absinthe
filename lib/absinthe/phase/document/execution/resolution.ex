@@ -318,13 +318,25 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     end
   end
 
+  def walk_result(
+        %Result.Leaf{value: nil, errors: []} = result,
+        bp_node,
+        %Type.NonNull{},
+        res,
+        path
+      ) do
+    error = error(bp_node, "Cannot return null for non-nullable field", path, %{})
+    {%{result | errors: [error]}, res}
+  end
+
   def walk_result(%Result.Leaf{} = result, _, _, res, _) do
     {result, res}
   end
 
   def walk_result(%{values: values} = result, bp_node, schema_type, res, path) do
-    {values, res} = walk_results(values, bp_node, schema_type, res, [0 | path], [])
-    {%{result | values: values}, res}
+    %Type.List{of_type: inner_type} = Type.unwrap_non_null(schema_type)
+    {values, res} = walk_results(values, bp_node, inner_type, res, [0 | path], [])
+    propagate_null_trimming({%{result | values: values}, res})
   end
 
   # walk list results
@@ -393,11 +405,13 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     path = [frame.index | frame.path]
     res = %{res | delivery: MapSet.new(), path: path}
     errors = maybe_add_non_null_error([], value, frame.item_type)
+    emitter = frame.emitter
+    emitter = put_in(emitter.schema_node.type, frame.item_type)
 
     value
-    |> to_result(frame.emitter, frame.item_type, frame.extensions)
-    |> add_errors(errors, &put_result_error_value(&1, &2, frame.emitter, frame.source, path))
-    |> walk_result(frame.emitter, frame.item_type, res, path)
+    |> to_result(emitter, frame.item_type, frame.extensions)
+    |> add_errors(errors, &put_result_error_value(&1, &2, emitter, frame.source, path))
+    |> walk_result(emitter, frame.item_type, res, path)
     |> propagate_null_trimming()
   end
 
@@ -580,11 +594,9 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
       errors: errors
     } = res
 
-    # Every element of a list ends up with the same emitter (the field node
-    # with its type expanded), so we build it once per field and reuse it
-    # instead of rebuilding it for each element. It's never written back to
-    # res.definition, so middleware sees no difference; result nodes carry the
-    # same emitter values as before, just shared.
+    # Expand the field type once. List completion shares an emitter between
+    # siblings, with its type narrowed to the item at each list level.
+    # Middleware keeps the original res.definition.
     {bp_field, res} = prepared_emitter(res, res.definition, res.parent_type, res.path)
     full_type = bp_field.schema_node.type
 
@@ -641,29 +653,11 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     end
   end
 
-  defp maybe_add_non_null_error(errors, value, type, path \\ [])
-
-  defp maybe_add_non_null_error([], nil, %Type.NonNull{}, []) do
+  defp maybe_add_non_null_error([], nil, %Type.NonNull{}) do
     ["Cannot return null for non-nullable field"]
   end
 
-  defp maybe_add_non_null_error([], nil, %Type.NonNull{}, path) do
-    [%{message: "Cannot return null for non-nullable field", path: Enum.reverse(path)}]
-  end
-
-  defp maybe_add_non_null_error([], value, %Type.NonNull{of_type: %Type.List{} = type}, path) do
-    maybe_add_non_null_error([], value, type, path)
-  end
-
-  defp maybe_add_non_null_error([], [_ | _] = values, %Type.List{of_type: type}, path) do
-    values
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {value, index} ->
-      maybe_add_non_null_error([], value, type, [index | path])
-    end)
-  end
-
-  defp maybe_add_non_null_error(errors, _, _, _path) do
+  defp maybe_add_non_null_error(errors, _, _) do
     errors
   end
 
@@ -685,7 +679,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   defp do_propagate_null_trimming(node) do
-    if bad_child = find_bad_child(node) do
+    if find_bad_child(node) do
       bp_field = node.emitter
 
       full_type =
@@ -695,16 +689,24 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
       nil
       |> to_result(bp_field, full_type, node.extensions)
-      |> Map.put(:errors, node.errors ++ bad_child.errors)
+      |> Map.put(:errors, result_errors(node))
     else
       node
     end
   end
 
+  defp result_errors(%{fields: fields, errors: errors}),
+    do: errors ++ Enum.flat_map(fields, &result_errors/1)
+
+  defp result_errors(%{values: values, errors: errors}),
+    do: errors ++ Enum.flat_map(values, &result_errors/1)
+
+  defp result_errors(%{errors: errors}), do: errors
+
   # A list element needs the trimming pass if it must be nulled out itself
   # (a bad child of its own) or if it violates the list's element nullability.
   defp needs_trimming?(element) do
-    find_bad_child(element) || non_null_list_violation?(element)
+    find_bad_child(element) || non_null_violation?(element)
   end
 
   defp find_bad_child(%{fields: fields}) do
@@ -712,7 +714,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   defp find_bad_child(%{values: values}) do
-    Enum.find(values, &non_null_list_violation?/1)
+    Enum.find(values, &non_null_violation?/1)
   end
 
   defp find_bad_child(_) do
@@ -726,36 +728,6 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   defp non_null_violation?(_) do
     false
-  end
-
-  defp non_null_list_violation?(%{values: values}) do
-    Enum.find(values, &non_null_list_violation?/1)
-  end
-
-  # FIXME: Not super happy with this lookup process.
-  # Also it would be nice if we could use the same function as above.
-  defp non_null_list_violation?(%{value: nil, emitter: %{schema_node: %{type: type}}}) do
-    !null_allowed_in_list?(type)
-  end
-
-  defp non_null_list_violation?(_) do
-    false
-  end
-
-  defp null_allowed_in_list?(%Type.List{of_type: wrapped_type}) do
-    null_allowed_in_list?(wrapped_type)
-  end
-
-  defp null_allowed_in_list?(%Type.NonNull{of_type: %Type.List{of_type: wrapped_type}}) do
-    null_allowed_in_list?(wrapped_type)
-  end
-
-  defp null_allowed_in_list?(%Type.NonNull{of_type: _wrapped_type}) do
-    false
-  end
-
-  defp null_allowed_in_list?(_type) do
-    true
   end
 
   defp add_errors(result, errors, fun) do
@@ -812,10 +784,12 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   defp to_result(root_value, blueprint, %Type.List{of_type: inner_type}, extensions) do
+    item_blueprint = put_in(blueprint.schema_node.type, inner_type)
+
     values =
       root_value
       |> List.wrap()
-      |> Enum.map(&to_result(&1, blueprint, inner_type, extensions))
+      |> Enum.map(&to_result(&1, item_blueprint, inner_type, extensions))
 
     %Result.List{values: values, emitter: blueprint, extensions: extensions}
   end

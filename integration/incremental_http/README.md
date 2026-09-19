@@ -95,8 +95,9 @@ cancellation of detached resolver-owned tasks or external services.
 
 Coverage includes:
 
-- Aliases, labels, variables, initial prefixes, progressive lists, normalized
+- Aliases, explicit-null labels, variables, initial prefixes, progressive lists, normalized
   cache writes, nested defer/stream, shared fields and resolver-once behavior.
+- Nested-list nullability in streamed prefixes and non-null rows.
 - Disabled directives, empty/null lists and parents, eager JSON fallback,
   initial and incremental errors, non-null boundaries and cancellation.
 - Malformed requests, unsupported negotiation, truncated responses, terminal
@@ -105,6 +106,8 @@ Coverage includes:
   discriminators, nullable streamed items and error paths.
 - Compiled `@stream_connection`, deferred page info, cursor pagination, and
   subsequent null-edge pages without duplicate nodes or cursor warnings.
+- Overlapping Relay and Apollo requests to the same endpoint, each retaining
+  its negotiated format and independent continuation demand.
 - Compiled Relay mutations with suspended eager work before the second root;
   deferred demand; late deferred failure retaining already executed mutations
   while stopping later deferred work.
@@ -127,8 +130,8 @@ unsupported-only choices. The Relay negotiation parameter is application-defined
 
 ## Verification limits
 
-The clean-install runner passed **49 tests** locally on 2026-09-19: **26 Relay**
-and **23 locally patched Apollo**, with no failures or skips, using the pinned
+The clean-install runner passed **52 tests** locally on 2026-09-19: **27 Relay/mixed-client**
+and **25 locally patched Apollo**, with no failures or skips, using the pinned
 runtimes. Compilation and formatting checks also passed.
 
 The GitHub Actions workflow runs this harness for pull requests and pushes to
