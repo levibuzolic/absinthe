@@ -1,6 +1,23 @@
 defmodule IncrementalHTTP.Bridge do
   @moduledoc false
 
+  defmodule RelayExtensions do
+    use Absinthe.Phase
+
+    # Probe mixed atom/string extension keys before Relay formatting and JSON encoding.
+    def run(blueprint, options) do
+      {:ok, blueprint} = Absinthe.Phase.Document.Result.run(blueprint, options)
+
+      extensions = %{
+        :is_final => "reserved atom",
+        "is_final" => "reserved string",
+        "trace" => "preserved"
+      }
+
+      {:ok, put_in(blueprint.result[:extensions], extensions)}
+    end
+  end
+
   # A test-only JSON-lines bridge. Each request owns its enumerable and executes
   # in one monitored process; no GraphQL payload fields are rewritten here.
   def run do
@@ -75,6 +92,20 @@ defmodule IncrementalHTTP.Bridge do
         format when format in ["draft", "relay"] ->
           format = if format == "relay", do: :relay, else: :draft
           options = Keyword.put(options, :incremental_format, format)
+
+          options =
+            if format == :relay do
+              Keyword.put(options, :pipeline_modifier, fn pipeline, _ ->
+                Absinthe.Pipeline.replace(
+                  pipeline,
+                  Absinthe.Phase.Document.Result,
+                  RelayExtensions
+                )
+              end)
+            else
+              options
+            end
+
           Absinthe.run_incremental!(request["query"], IncrementalHTTP.Schema, options)
       end
 

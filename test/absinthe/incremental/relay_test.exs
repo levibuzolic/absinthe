@@ -6,9 +6,15 @@ defmodule Absinthe.Incremental.RelayTest do
     use Absinthe.Fixture
     import_directives Absinthe.Type.BuiltIns.IncrementalDirectives
 
+    scalar :opaque do
+      serialize &Function.identity/1
+    end
+
     object :person do
       field :id, :id
       field :friends, list_of(:person)
+      field :opaque, :opaque
+      field :later_opaque, :opaque
 
       field :failure, :string do
         resolve fn _, _ -> {:error, "unavailable"} end
@@ -41,7 +47,11 @@ defmodule Absinthe.Incremental.RelayTest do
        %{
          blueprint
          | result:
-             Map.put(blueprint.result, :extensions, %{trace: "present", is_final: "reserved"})
+             Map.put(blueprint.result, :extensions, %{
+               :trace => "present",
+               :is_final => "reserved atom",
+               "is_final" => "reserved string"
+             })
        }}
     end
   end
@@ -232,6 +242,65 @@ defmodule Absinthe.Incremental.RelayTest do
     assert [patch, final] = Enum.to_list(result.subsequent_results)
     assert patch.extensions == %{trace: "present", is_final: false}
     assert final.extensions == %{trace: "present", is_final: true}
+  end
+
+  test "custom scalar structs and JSON containers survive deferred snapshots and null-slot replay" do
+    date = ~D[2026-09-19]
+    object = %{"dates" => [date], "details" => %{"enabled" => true}}
+
+    root = %{
+      person: %{
+        opaque: date,
+        later_opaque: [object],
+        friends: [%{id: 1, opaque: object}, nil]
+      }
+    }
+
+    query = """
+    { person {
+      opaque
+      ... @defer(label: "Q$defer$Details") {
+        laterOpaque
+        friends @stream(label: "Q$stream$Friends") { id opaque }
+      }
+    } }
+    """
+
+    assert {:ok, eager} = Absinthe.run(query, Schema, root_value: root)
+
+    assert {:ok, result} =
+             Absinthe.run_incremental(query, Schema,
+               incremental_format: :relay,
+               root_value: root
+             )
+
+    assert result.initial_result.data == %{"person" => %{"opaque" => date}}
+    assert [deferred, item, final] = Enum.to_list(result.subsequent_results)
+
+    assert deferred.data == %{
+             "opaque" => date,
+             "laterOpaque" => [object],
+             "friends" => []
+           }
+
+    assert item.data == %{"id" => "1", "opaque" => object}
+    assert final.data == eager.data
+    assert final.extensions.is_final
+  end
+
+  test "ordinary Relay results reserve the final extension for atom and string keys" do
+    assert {:ok, result} =
+             Absinthe.run_incremental("{ person { id } }", Schema,
+               incremental_format: :relay,
+               root_value: %{person: %{id: 1}},
+               pipeline_modifier: fn pipeline, _ ->
+                 Absinthe.Pipeline.replace(pipeline, Absinthe.Phase.Document.Result, Result)
+               end
+             )
+
+    assert result.data == %{"person" => %{"id" => "1"}}
+    assert result.hasNext == false
+    assert result.extensions == %{trace: "present", is_final: true}
   end
 
   test "deferred errors stay scoped to each list item and retain order across snapshots" do
