@@ -10,8 +10,9 @@ documents schema opt-in, execution APIs, response shapes, and transport integrat
 A schema imports `Absinthe.Type.BuiltIns.IncrementalDirectives`; callers use
 `Absinthe.run_incremental/3` or its raising variant. Ordinary `Absinthe.run/3`
 keeps its single-result contract and executes imported directives eagerly.
-Validation applies to both APIs. No dependencies, background workers, or
-transport packages are added.
+Validation applies to both APIs. The root library adds no dependencies,
+background workers or transport packages. A test-only HTTP harness has its own
+locked client and transport dependencies.
 
 The design addresses the concerns raised in
 [the earlier implementation's removal](https://github.com/absinthe-graphql/absinthe/pull/1377#issuecomment-4068271138):
@@ -28,6 +29,7 @@ response encoder.
 | `Planner` | Collect field occurrences, retain defer ownership, merge selections, and partition eager/deferred work and stream prefixes |
 | `State` | Track groups, runnable jobs, buffered frames, and publication dependencies |
 | `Delivery` | Resume execution, publish payloads, complete groups, and cancel unreachable work |
+| `Relay` | Convert published core results into labeled snapshots, indexed items and final markers |
 | Existing resolution phase | Resolve fields and resume suspended Async, Batch, Dataloader, and custom middleware |
 | Incremental validation phases | Validate labels, list types, operation restrictions, and overlapping streams |
 
@@ -80,6 +82,21 @@ Schema introspection and SDL export preserve the directive defaults. SDL export
 uses the same typed default serialization as introspection, including GraphQL
 string escaping.
 
+## Relay compatibility
+
+`incremental_format: :relay` selects the labeled response format expected by
+Relay 21.0.1. The formatter retains delivered data to normalize compiled
+fragments, including shared fields and deferred ancestors with no independent
+work. Compiled connections stream edges and defer page info. The client uses
+`deferDeduplicatedFields: true` and an Observable network with completion checks.
+
+Failed incremental boundaries terminate the Relay operation. Nullable streamed
+items keep their positions through a final accumulated snapshot; this can
+produce Relay's expected non-streaming development warning. The formatter's
+retained data and repeated snapshots have memory and wire costs. Scalar-list
+streaming and customized batching are not supported by this Relay contract.
+See the guide for negotiation and network requirements.
+
 ## Draft interpretation
 
 The pinned proposal's subscription-validation condition conflicts with its
@@ -97,7 +114,7 @@ those cases; the probes are not a claim of exhaustive equivalence.
 
 ## Test coverage
 
-The branch adds 145 incremental test declarations and two SDL-export regressions.
+The branch adds 155 incremental test declarations and two SDL-export regressions.
 The tests cover:
 
 | Area | Cases and assertions |
@@ -106,6 +123,7 @@ The tests cover:
 | Collection and delivery | Aliases, abstract types, nested defer/stream, shared fields, initial omission, prefix limits, resolver-once behavior, and final reconstructed data |
 | Errors and lifecycle | Initial/deferred/streamed failures, nullable and non-null boundaries, shared-owner cancellation, formatter redaction, error paths/locations/extensions, and early halt |
 | Middleware and options | Async, Batch, Dataloader, repeated suspension, serial mutations, context, callbacks, custom execution/result phases, and continuation errors |
+| Relay | Labeled snapshots, ancestor ordering, absolute stream indices, scoped errors, null replay, extensions and early halt |
 | Consumer contract | Unique pending IDs, owned updates, valid list indices, duplicate-field rejection, exactly-once completion, and terminal state |
 
 One test checks 768 deterministic combinations of shared defer parents, nested
@@ -131,27 +149,34 @@ Local checks on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,650 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,650 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,650 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,650 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,660 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,660 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,660 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,660 tests, zero failures, 3 existing exclusions |
 | `mix dialyzer` | Zero errors; ignore entries unchanged |
 | Formatting and `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
-| Separate Apollo HTTP harness | 22 passed; two tests characterize known client defects |
+| Integrated HTTP harness | 49 passed: 26 Relay, 23 locally patched Apollo; no failures or skips |
 
 Full suites use `mix test --warnings-as-errors`. None of the incremental tests
 is skipped. These local runs do not cover every operating system or CI runtime
 combination.
 
-The [HTTP harness](https://github.com/levibuzolic/absinthe/tree/2c0537d9/integration/incremental_http)
-uses Apollo Client 4.3.0's `GraphQL17Alpha9Handler`, Node 24.21.0, Elixir 1.19.5,
-and OTP 28.5. It was run against this checkout through a local path dependency.
-Two known Apollo limitations are asserted rather than treated as successful
-interop: inner streams introduced in streamed items lose client data, and
-unsubscribe produces an unhandled reader `AbortError`.
+The [HTTP harness](integration/incremental_http/README.md) runs in this branch's
+CI using real Apollo HTTP requests and compiled Relay operations. It covers
+progressive results, normalized caches, connections and pagination, suspended
+mutations, errors, truncation and cancellation. Resolver gates establish demand
+and ordering; cancellation checks sockets and monitored request workers.
 
-That harness is separate from this branch and its CI. It does not certify a
-production Absinthe Plug adapter, Relay's legacy protocol, proxy buffering,
-HTTP/2, SSE, WebSockets, or cancellation of arbitrary resolver-owned background
-work. Core payload support remains tied to the pinned draft.
+Apollo 4.3.1 still has defects in nested streams and reader cancellation. The
+harness explicitly applies a pinned, test-only client patch and includes the
+corresponding source fixes and upstream regression tests. Its tests now require
+correct nested data and cancellation without unhandled rejections. Those tests
+failed on the stock client before the patch. This verifies locally fixed Apollo,
+not the published package. Relay 21.0.1 is unmodified.
+
+The harness does not certify a production Absinthe Plug adapter, browsers,
+proxy buffering, HTTP/2, SSE, WebSockets or cancellation of arbitrary
+resolver-owned background work. Core payload support remains tied to the pinned
+draft. Client versions, patch provenance and verification limits are recorded
+in the harness README.
