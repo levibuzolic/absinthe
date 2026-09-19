@@ -37,18 +37,32 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
     blueprint = %{bp_root | execution: execution}
 
-    if Keyword.get(options, :plugin_callbacks, true) do
-      bp_root.schema.plugins()
-      |> Absinthe.Plugin.pipeline(execution)
-      |> case do
-        [] ->
-          {:ok, blueprint}
+    pipeline =
+      if Keyword.get(options, :plugin_callbacks, true),
+        do: Absinthe.Plugin.pipeline(bp_root.schema.plugins(), execution),
+        else: []
 
-        pipeline ->
-          {:insert, blueprint, pipeline}
+    pipeline =
+      if execution.mutation != nil do
+        pipeline =
+          Enum.map(pipeline, fn
+            __MODULE__ -> {__MODULE__, options}
+            phase -> phase
+          end)
+
+        # Resume options belong to that plugin phase. A new root starts with
+        # the original options so a callback-disabled resume cannot leak into it.
+        if execution.pending == [] and
+             not Enum.any?(pipeline, &match?({__MODULE__, _}, &1)),
+           do: pipeline ++ [{__MODULE__, execution.mutation.options}],
+           else: pipeline
+      else
+        pipeline
       end
-    else
-      {:ok, blueprint}
+
+    case pipeline do
+      [] -> {:ok, blueprint}
+      pipeline -> {:insert, blueprint, pipeline}
     end
   end
 
@@ -84,23 +98,49 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
       }
       |> Map.merge(common)
 
-    exec = do_perform_resolution(exec, operation, res)
+    exec = do_perform_resolution(exec, operation, res, options)
 
     exec = plugins |> run_callbacks(:after_resolution, exec, run_callbacks?)
 
-    maybe_substitute_pending(exec)
+    exec |> maybe_substitute_pending() |> finish_mutation()
   end
 
   # First run: expand the operation into the result tree. Suspended fields
   # leave placeholders in the tree and are collected into the pending pool.
-  defp do_perform_resolution(%{result: nil, incremental: %{frame: frame}} = exec, _operation, res)
+  defp do_perform_resolution(
+         %{result: nil, incremental: %{frame: frame}} = exec,
+         _operation,
+         res,
+         _options
+       )
        when not is_nil(frame) do
     {result, res} = resolve_frame(frame, res)
     exec = update_persisted_fields(exec, res)
     %{exec | result: result, pending: Enum.reverse(res.pending)}
   end
 
-  defp do_perform_resolution(%{result: %{fields: nil}} = exec, operation, res) do
+  defp do_perform_resolution(
+         %{result: %{fields: nil}} = exec,
+         %{type: :mutation} = op,
+         res,
+         options
+       ) do
+    {:ok, fields, res} = project_fields(op, op.schema_node, exec.root_value, [op], res)
+
+    exec = %{
+      exec
+      | mutation: %{fields: fields, options: options},
+        result: %{exec.result | fields: []}
+    }
+
+    resolve_mutation_fields(exec, op, res)
+  end
+
+  defp do_perform_resolution(%{pending: [], mutation: %{}} = exec, op, res, _options) do
+    resolve_mutation_fields(exec, op, res)
+  end
+
+  defp do_perform_resolution(%{result: %{fields: nil}} = exec, operation, res, _options) do
     {result, res} =
       exec.result
       |> walk_result(operation, operation.schema_node, res, [operation])
@@ -114,7 +154,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   # Subsequent runs: resume only the suspended fields in the pending pool. The
   # result tree already built in previous runs is left untouched; completed
   # results are stored by ref for the final substitution pass.
-  defp do_perform_resolution(exec, _operation, res) do
+  defp do_perform_resolution(exec, _operation, res, _options) do
     {pool, resolved, res} =
       Enum.reduce(exec.pending, {[], exec.resolved, res}, &resolve_pending/2)
 
@@ -122,6 +162,46 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
     %{exec | pending: Enum.reverse(pool, Enum.reverse(res.pending)), resolved: resolved}
   end
+
+  # Roots remain serial across every suspension in their eager subtree.
+  # Deferred children are queued separately and do not block the next root.
+  # Completed roots are accumulated in reverse order until the operation ends.
+  defp resolve_mutation_fields(%{mutation: %{fields: [field | fields]}} = exec, op, res) do
+    {value, res} = maybe_fast_resolve(field, res, exec.root_value, op.schema_node, [field, op])
+    result = %{exec.result | fields: [value | exec.result.fields]}
+    exec = %{exec | result: result, mutation: %{exec.mutation | fields: fields}}
+
+    cond do
+      res.pending != [] ->
+        exec = update_persisted_fields(exec, res)
+        %{exec | pending: Enum.reverse(res.pending)}
+
+      non_null_violation?(value) ->
+        exec = update_persisted_fields(exec, res)
+        %{exec | result: do_propagate_null_trimming(result), mutation: nil}
+
+      true ->
+        resolve_mutation_fields(exec, op, res)
+    end
+  end
+
+  defp resolve_mutation_fields(%{mutation: %{fields: []}} = exec, _op, res),
+    do: update_persisted_fields(exec, res)
+
+  defp finish_mutation(%{mutation: nil} = exec), do: exec
+  defp finish_mutation(%{pending: [_ | _]} = exec), do: exec
+
+  defp finish_mutation(%{result: %Result.Leaf{value: nil}} = exec),
+    do: %{exec | mutation: nil}
+
+  defp finish_mutation(%{mutation: %{fields: []}} = exec),
+    do: %{
+      exec
+      | result: %{exec.result | fields: Enum.reverse(exec.result.fields)},
+        mutation: nil
+    }
+
+  defp finish_mutation(exec), do: exec
 
   defp resolve_pending({ref, old_res}, {pool, resolved, res}) do
     res = update_persisted_fields(old_res, res)
@@ -146,9 +226,17 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     end
   end
 
-  # Once nothing remains suspended, splice the resolved results in over their
-  # placeholders. This is the only walk of the existing tree that re-running
-  # this phase performs, and it happens exactly once per document.
+  # Once the pending pool drains, substitute its results in one pass. Only
+  # the current mutation root can contain placeholders; previous roots are done.
+  defp maybe_substitute_pending(%{pending: [], mutation: %{}, resolved: resolved} = exec)
+       when map_size(resolved) > 0 do
+    [current | completed] = exec.result.fields
+    {current, _} = substitute(current, resolved)
+    result = %{exec.result | fields: [current | completed]}
+    result = if non_null_violation?(current), do: do_propagate_null_trimming(result), else: result
+    %{exec | result: result, resolved: %{}}
+  end
+
   defp maybe_substitute_pending(%{pending: [], resolved: resolved} = exec)
        when map_size(resolved) > 0 do
     {result, _} = substitute(exec.result, resolved)
