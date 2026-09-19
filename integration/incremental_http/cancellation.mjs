@@ -57,6 +57,27 @@ try {
   ]);
   assert.equal(blocked.raw.length, 1);
 
+  const parent = observe(
+    server,
+    scope,
+    "{ person { id ... @defer { friend(wait: true) { id name } } } }",
+  );
+  assert.deepEqual(data(await parent.initial()), { person: { id: "1" } });
+  server.next(parent.id);
+  await server.wait(
+    parent.id,
+    (s) => s.events.some((e) => e.event === "blocked"),
+    "deferred parent resolver gate",
+  );
+  parent.subscription.unsubscribe();
+  await stopped(parent);
+  assert.deepEqual(server.paths(parent.id), [
+    ["person"],
+    ["person", "id"],
+    ["person", "friend"],
+  ]);
+  assert.equal(parent.raw.length, 1);
+
   const comparison = observe(
     reference,
     scope,
@@ -78,7 +99,7 @@ try {
 }
 console.log(
   JSON.stringify({
-    cancelled: 3,
+    cancelled: 4,
     referenceCancelled: 1,
   }),
 );
