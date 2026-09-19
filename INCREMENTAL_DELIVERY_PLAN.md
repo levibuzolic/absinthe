@@ -96,7 +96,12 @@ their directives.
 
 Schema introspection and SDL export preserve the directive defaults. SDL export
 uses the same typed default serialization as introspection, including GraphQL
-string escaping.
+string escaping and notation-defined input-object field defaults. Output-field
+resolver defaults are not part of SDL.
+
+Operation telemetry covers the initial call. Field telemetry follows deferred
+and streamed execution during continuation pulls, including middleware
+suspension; stopping consumption leaves later field spans unstarted.
 
 ## Relay compatibility
 
@@ -161,7 +166,7 @@ unqualified claim of literal adherence to every sentence.
 
 ## Test coverage
 
-The branch adds 177 incremental test declarations and two SDL-export regressions.
+The branch adds 179 incremental test declarations and three SDL-export regressions.
 The tests cover:
 
 | Area | Cases and assertions |
@@ -169,7 +174,7 @@ The tests cover:
 | Schema and validation | Defaults, coercion, custom directives alongside built-ins, adapted names, labels, skipped selections, reused fragments, unselected operations, and all overlapping-stream pairs |
 | Collection and delivery | Aliases, abstract types, nested defer/stream, shared fields, location-free directive identity, parsed-document inputs, initial omission, prefix limits, resolver-once behavior, and final reconstructed data |
 | Errors and lifecycle | Initial/deferred/streamed failures, mixed synchronous/suspended sibling errors, nullable and non-null boundaries, shared-owner cancellation, initially empty groups acquiring work, formatter redaction, error paths/locations/extensions, and early halt |
-| Middleware and options | Async, Batch, Dataloader, repeated suspension, serial mutations, context, callbacks, custom execution/result phases, and continuation errors |
+| Middleware and options | Async, Batch, Dataloader, repeated suspension, serial mutations, context, callbacks, custom execution/result phases, telemetry timing and early halt, and continuation errors |
 | Relay | Projected snapshots, reused-fragment discriminators, ancestor ordering, absolute stream indices, scoped errors, null replay, opaque scalar structs, reserved extension keys and early halt |
 | Consumer contract | Unique pending IDs, owned updates, valid list indices, duplicate-field rejection, exactly-once completion, and terminal state |
 
@@ -212,10 +217,10 @@ Local checks on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,682 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,682 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,682 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,682 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,685 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,685 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,685 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,685 tests, zero failures, 3 existing exclusions |
 | `mix dialyzer` | Zero errors; ignore entries unchanged |
 | Formatting and `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
