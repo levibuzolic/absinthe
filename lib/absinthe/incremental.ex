@@ -19,6 +19,7 @@ defmodule Absinthe.Incremental do
   @enforce_keys [:initial_result, :subsequent_results]
   defstruct [:initial_result, :subsequent_results]
 
+  @typedoc "An incremental response with an eager result and lazy subsequent results."
   @type t :: %__MODULE__{initial_result: map(), subsequent_results: Enumerable.t()}
 
   @doc false

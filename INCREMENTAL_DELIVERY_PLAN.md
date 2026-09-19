@@ -29,7 +29,7 @@ response encoder.
 
 | Component | Responsibility |
 | --- | --- |
-| `Absinthe.Incremental` / `Start` | Build the configured initial and continuation pipelines; return an initial result and lazy enumerable |
+| `Absinthe.Incremental` / `Start` | Build the configured pipelines, identify original defer occurrences, and return an initial result and lazy enumerable |
 | `Planner` | Collect field occurrences, retain defer ownership, merge selections, and partition eager/deferred work and stream prefixes |
 | `State` | Track groups, runnable jobs, buffered frames, and publication dependencies |
 | `Delivery` | Resume execution, publish payloads, complete groups, and cancel unreachable work |
@@ -44,7 +44,8 @@ The scheduler relies on these invariants:
   process. Halting or discarding the enumerable prevents later incremental
   execution. Consumers enumerate once; a second enumeration repeats that work.
 - **Field occurrences retain ownership.** Named fragments have context-sensitive
-  visited state. Eager occurrences dominate deferred ones; ancestor defer usages
+  visited state keyed by original directive identities, independent of source
+  locations. Eager occurrences dominate deferred ones; ancestor defer usages
   dominate descendant usages for the same response name. Merged child selections
   retain their own ownership, so shared fields resolve once without losing data.
 - **Deferred groups publish atomically.** Private values wait for their whole
@@ -76,8 +77,10 @@ The scheduler relies on these invariants:
 
 Result completion propagates nulls from children to parents in the recursive
 walk. Resuming suspended fields uses the same bottom-up order when substituting
-their results. Each container returns already completed, without separate
-passes over list children or duplicate checks for non-null leaf errors.
+their results. Containers that introduce suspended children stay intact until
+substitution so every completed sibling error survives null propagation.
+Completed containers need no separate passes over list children or duplicate
+checks for non-null leaf errors.
 
 Mutation roots and their eager subtrees finish serially across middleware
 suspensions. Deferred children do not block later roots. Explicit plugin resume
@@ -147,16 +150,16 @@ unqualified claim of literal adherence to every sentence.
 
 ## Test coverage
 
-The branch adds 159 incremental test declarations and two SDL-export regressions.
+The branch adds 167 incremental test declarations and two SDL-export regressions.
 The tests cover:
 
 | Area | Cases and assertions |
 | --- | --- |
 | Schema and validation | Defaults, coercion, custom directives alongside built-ins, adapted names, labels, skipped selections, reused fragments, unselected operations, and all overlapping-stream pairs |
-| Collection and delivery | Aliases, abstract types, nested defer/stream, shared fields, initial omission, prefix limits, resolver-once behavior, and final reconstructed data |
-| Errors and lifecycle | Initial/deferred/streamed failures, nullable and non-null boundaries, shared-owner cancellation, formatter redaction, error paths/locations/extensions, and early halt |
+| Collection and delivery | Aliases, abstract types, nested defer/stream, shared fields, location-free directive identity, parsed-document inputs, initial omission, prefix limits, resolver-once behavior, and final reconstructed data |
+| Errors and lifecycle | Initial/deferred/streamed failures, mixed synchronous/suspended sibling errors, nullable and non-null boundaries, shared-owner cancellation, formatter redaction, error paths/locations/extensions, and early halt |
 | Middleware and options | Async, Batch, Dataloader, repeated suspension, serial mutations, context, callbacks, custom execution/result phases, and continuation errors |
-| Relay | Labeled snapshots, ancestor ordering, absolute stream indices, scoped errors, null replay, extensions and early halt |
+| Relay | Labeled snapshots, ancestor ordering, absolute stream indices, scoped errors, null replay, opaque scalar structs, reserved extension keys and early halt |
 | Consumer contract | Unique pending IDs, owned updates, valid list indices, duplicate-field rejection, exactly-once completion, and terminal state |
 
 One test checks 768 deterministic combinations of shared defer parents, nested
@@ -164,6 +167,11 @@ fragments, stream enablement/prefixes, and populated/empty/null lists. Its initi
 data oracle is independent of the returned payload; its final data is compared
 with eager execution. Resolver traces establish demand without timing sleeps.
 These cases are a bounded product, not an exhaustive schema generator.
+
+A separate 192-execution matrix exercises mixed synchronous, Async, and Batch
+siblings under non-null failures. It checks expected error paths, resolver
+completion, and identical payloads across sibling orders, nested containers,
+deferred fragments, and streamed items.
 
 A separate coverage audit caught all ten representative injected faults:
 incorrect conditions, prefix size and stream indices, missing completion,
@@ -173,8 +181,10 @@ restored before verification. This is not an exhaustive mutation-testing score.
 
 The diagnostic `mix run benchmarks/incremental_delivery.exs` reports median
 initial and continuation times for nullable values, shared groups, nested groups,
-and streams containing deferred fields. These measurements are not CI timing
-assertions. Cancellation after actual failures still scans queued work.
+streams containing deferred fields, and reused named fragments. A separate
+one-row scenario scales document aliases to measure larger initial documents.
+These measurements are not CI timing assertions. Cancellation after actual
+failures still scans queued work.
 
 ## Verification
 
@@ -182,10 +192,10 @@ Local checks on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,664 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,664 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,664 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,664 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,672 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,672 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,672 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,672 tests, zero failures, 3 existing exclusions |
 | `mix dialyzer` | Zero errors; ignore entries unchanged |
 | Formatting and `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |

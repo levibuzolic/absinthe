@@ -6,9 +6,9 @@ enumerable resolves the remaining work as the caller requests more payloads.
 
 This feature follows [GraphQL spec proposal #1110](https://github.com/graphql/graphql-spec/pull/1110)
 at revision [`045e19363c2b55f127960bd3b5e8072a15b29aec`](https://github.com/graphql/graphql-spec/tree/045e19363c2b55f127960bd3b5e8072a15b29aec).
-This was still the latest proposal revision when checked on 2026-09-19. It is an
-RFC Stage 2 draft, not part of the published September 2025 GraphQL specification,
-and its protocol may change. Both the schema and execution caller must opt in.
+This implementation is pinned to that revision. It is an RFC Stage 2 draft, not
+part of the published September 2025 GraphQL specification, and its protocol may
+change. Both the schema and execution caller must opt in.
 
 ## Enable the directives
 
@@ -45,9 +45,10 @@ directive @stream(if: Boolean! = true, label: String, initialCount: Int! = 0)
 The directives are not repeatable. `@stream` applies only to list fields and
 streams the outermost list when its type contains nested lists. Labels are
 optional string literals; non-null labels must be unique across both directives
-in the entire document. An explicit `label: null` is retained in pending notices; an omitted label stays
-omitted. A label cannot be a variable. The `if` and `initialCount`
-arguments may use variables and follow ordinary argument coercion.
+in the entire document. An explicit `label: null` is retained in pending
+notices; an omitted label stays omitted. A label cannot be a variable. The `if`
+and `initialCount` arguments may use variables and follow ordinary argument
+coercion.
 
 Schemas without this import retain their existing behavior, including schemas
 that define unrelated custom directives with the same names.
@@ -217,6 +218,14 @@ multipart boundaries, SSE event names, or WebSocket envelopes. An adapter must
 negotiate a compatible protocol, encode the payloads, preserve their sequence,
 and stop consuming when the client disconnects. Existing transport packages do
 not automatically gain incremental support by importing the directives.
+
+At the transport boundary, deliver `initial_result` once, then each yielded
+`subsequent_results` payload once and in order, in the request process. Stop
+enumeration after the terminal `hasNext: false` payload or when the client
+disconnects. Handle exceptions raised while enumerating the continuation as
+request or transport failures and stop consuming. Set bounds appropriate for
+your service: the core retains the source list until its continuation is
+consumed or discarded, and Relay formatting retains accumulated snapshots.
 
 The eager `Absinthe.run/3` API remains available for clients and transports that
 accept only ordinary GraphQL responses. Do not pass an `Absinthe.Incremental`
