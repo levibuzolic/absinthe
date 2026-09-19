@@ -15,6 +15,17 @@ defmodule Absinthe.Incremental.LifecycleTest do
       field :other, :string
       field :child, :person
 
+      field :children, list_of(:person) do
+        resolve fn source, _, resolution ->
+          send(
+            resolution.context.test_pid,
+            {:children_resolved, Absinthe.Resolution.path(resolution)}
+          )
+
+          {:ok, source.children}
+        end
+      end
+
       field :observed_name, :string do
         resolve fn source, _, %{context: %{test_pid: pid}} ->
           send(pid, :observed_name_resolved)
@@ -186,6 +197,79 @@ defmodule Absinthe.Incremental.LifecycleTest do
              )
 
     refute_received :observed_name_resolved
+  end
+
+  test "overlapping sibling defers over nested lists keep one pending ID per fragment" do
+    fragments = %{
+      "A" => "branches: children { leaves: children { observedName } }",
+      "B" => "branches: children { name leaves: children { observedName age } }",
+      "C" => "branches: children { age leaves: children { observedName other } }"
+    }
+
+    for width <- [1, 4, 12],
+        labels <- [["A", "B"], ["A", "B", "C"]],
+        order <- [labels, Enum.reverse(labels)] do
+      branches =
+        for branch <- 1..width do
+          %{
+            name: "Branch #{branch}",
+            age: branch,
+            children:
+              for leaf <- 1..2 do
+                %{name: "Leaf #{branch}:#{leaf}", age: leaf, other: "ready"}
+              end
+          }
+        end
+
+      selections = Enum.map_join(order, " ", &"...#{&1} @defer(label: \"#{&1}\")")
+
+      definitions =
+        Enum.map_join(labels, " ", &"fragment #{&1} on Person { #{Map.fetch!(fragments, &1)} }")
+
+      query = "{ entry: person { name #{selections} } } #{definitions}"
+
+      assert {:ok, result} =
+               Absinthe.run_incremental(query, Schema,
+                 root_value: %{person: %{name: "Ada", children: branches}},
+                 context: %{test_pid: self()}
+               )
+
+      assert result.initial_result.data == %{"entry" => %{"name" => "Ada"}}
+      refute_received {:children_resolved, _}
+      refute_received :observed_name_resolved
+
+      expected_branches =
+        for branch <- branches do
+          leaves =
+            for leaf <- branch.children do
+              data = %{"observedName" => leaf.name, "age" => leaf.age}
+              if "C" in labels, do: Map.put(data, "other", leaf.other), else: data
+            end
+
+          data = %{"name" => branch.name, "leaves" => leaves}
+          if "C" in labels, do: Map.put(data, "age", branch.age), else: data
+        end
+
+      assert {%{"entry" => %{"name" => "Ada", "branches" => ^expected_branches}}, payloads} =
+               Incremental.consume(result)
+
+      assert Enum.sort(
+               for payload <- payloads,
+                   notice <- Map.get(payload, :pending, []),
+                   do: {notice.path, notice.label}
+             ) == Enum.map(labels, &{["entry"], &1})
+
+      assert_received {:children_resolved, ["entry", "branches"]}
+
+      for index <- 0..(width - 1) do
+        assert_received {:children_resolved, ["entry", "branches", ^index, "leaves"]}
+        assert_received :observed_name_resolved
+        assert_received :observed_name_resolved
+      end
+
+      refute_received {:children_resolved, _}
+      refute_received :observed_name_resolved
+    end
   end
 
   test "initial formatter redaction prunes deferred children without execution errors", %{

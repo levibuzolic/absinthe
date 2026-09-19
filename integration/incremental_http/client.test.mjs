@@ -511,39 +511,58 @@ test("Apollo cancellation closes sockets and workers without unhandled rejection
     },
   );
   assert.deepEqual(JSON.parse(stdout), {
-    cancelled: 3,
+    cancelled: 4,
     referenceCancelled: 1,
   });
 });
 
-test("initial data reaches Apollo while delayed resolver work is still blocked", async (t) => {
-  const operation = observe(t, "{ person { id ... @defer { slow } } }");
-  await server.wait(
-    operation.id,
-    (s) => s.payloads.length === 1,
-    "server wrote initial part",
-  );
-  server.next(operation.id);
-  await server.wait(
-    operation.id,
-    (s) => s.events.some((e) => e.event === "blocked"),
-    "delayed resolver gate",
-  );
-  assert.deepEqual(data(await operation.initial()), { person: { id: "1" } });
-  assert.equal(operation.raw.length, 1);
-  assert.equal(operation.results.at(-1).dataState, "streaming");
-  server.releaseResolver(operation.id);
-  // The continuation is already running. Wait for its payload before finish
-  // so no second permit is submitted to the same suspended continuation.
-  await server.wait(
-    operation.id,
-    (s) => s.stopped,
-    "released resolver completes",
-  );
-  assert.deepEqual(data(await operation.finish()), {
-    person: { id: "1", slow: "released" },
+for (const { selection, field, delivered, children } of [
+  { selection: "slow", field: "slow", delivered: "released", children: [] },
+  {
+    selection: "friend(wait: true) { id name }",
+    field: "friend",
+    delivered: { id: "2", name: "Grace" },
+    children: ["id", "name"],
+  },
+]) {
+  test(`initial data reaches Apollo while deferred ${field} is blocked`, async (t) => {
+    const operation = observe(
+      t,
+      `{ person { id ... @defer { ${selection} } } }`,
+    );
+    await server.wait(
+      operation.id,
+      (s) => s.payloads.length === 1,
+      "server wrote initial part",
+    );
+    server.next(operation.id);
+    await server.wait(
+      operation.id,
+      (s) => s.events.some((e) => e.event === "blocked"),
+      "delayed resolver gate",
+    );
+    assert.deepEqual(data(await operation.initial()), { person: { id: "1" } });
+    assert.equal(operation.raw.length, 1);
+    assert.equal(operation.results.at(-1).dataState, "streaming");
+    const beforeRelease = [["person"], ["person", "id"], ["person", field]];
+    assert.deepEqual(paths(operation.id), beforeRelease);
+    server.releaseResolver(operation.id);
+    // The continuation is already running. Wait for its payload before finish
+    // so no second permit is submitted to the same suspended continuation.
+    await server.wait(
+      operation.id,
+      (s) => s.stopped,
+      "released resolver completes",
+    );
+    assert.deepEqual(data(await operation.finish()), {
+      person: { id: "1", [field]: delivered },
+    });
+    assert.deepEqual(paths(operation.id), [
+      ...beforeRelease,
+      ...children.map((child) => ["person", field, child]),
+    ]);
   });
-});
+}
 
 test("negotiation rejects unsupported protocols and malformed HTTP requests before execution", async () => {
   const cases = [

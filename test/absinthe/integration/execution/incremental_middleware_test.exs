@@ -1,6 +1,8 @@
 defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
   use Absinthe.Case, async: false
 
+  alias Absinthe.Case.Assertions.Incremental
+
   defmodule Schema do
     use Absinthe.Schema
     use Absinthe.Fixture
@@ -55,6 +57,33 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
           end)
         end
       end
+
+      field :dataloader_friend, :person do
+        resolve fn %{id: id}, _, %{context: %{loader: loader, test_pid: pid}} ->
+          loader
+          |> Dataloader.load(:test, {:friend, pid}, id)
+          |> on_load(fn loader ->
+            {:ok, Dataloader.get(loader, :test, {:friend, pid}, id)}
+          end)
+        end
+      end
+
+      field :dataloader_friend_name, :string do
+        resolve fn %{id: id}, _, %{context: %{loader: loader, test_pid: pid}} ->
+          loader
+          |> Dataloader.load(:test, {:friend, pid}, id)
+          |> on_load(fn loader ->
+            %{id: friend_id} = Dataloader.get(loader, :test, {:friend, pid}, id)
+
+            loader
+            |> Dataloader.load(:test, {:name, pid}, friend_id)
+            |> on_load(fn loader ->
+              send(pid, {:friend_name_resolved, id})
+              {:ok, Dataloader.get(loader, :test, {:name, pid}, friend_id)}
+            end)
+          end)
+        end
+      end
     end
 
     query do
@@ -76,6 +105,12 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
     def load_dataloader({:name, pid}, keys) do
       send(pid, {:dataloader_loaded, keys})
       Map.new(keys, &{&1, dataloader_name(&1)})
+    end
+
+    def load_dataloader({:friend, pid}, keys) do
+      send(pid, {:dataloader_friends_loaded, keys})
+      friends = %{1 => 2, 2 => 3, 3 => 1}
+      Map.new(keys, &{&1, %{id: Map.fetch!(friends, &1)}})
     end
 
     def async_name(1), do: "Ada"
@@ -276,5 +311,149 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
     refute_received {:resolver_entered, _, _}
     assert_received {:batch_post_resolved, 1}
     assert_received {:batch_alias_post_resolved, 1}
+  end
+
+  test "separate deferred groups share dataloader keys with each other and the initial result", %{
+    options: options
+  } do
+    for preload? <- [false, true] do
+      initial_field = if preload?, do: "initial: dataloaderName", else: ""
+
+      query = """
+      { people {
+        id
+        #{initial_field}
+        ... @defer(label: "first") { first: dataloaderName }
+        ... @defer(label: "second") { second: dataloaderName }
+      } }
+      """
+
+      assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
+
+      initial_people =
+        for id <- 1..2 do
+          person = %{"id" => Integer.to_string(id)}
+          if preload?, do: Map.put(person, "initial", Schema.dataloader_name(id)), else: person
+        end
+
+      assert result.initial_result.data == %{"people" => initial_people}
+
+      for id <- 1..2, preload? do
+        assert_received {:resolver_entered, :dataloader_name, ^id}
+        assert_received {:dataloader_post_resolved, ^id}
+      end
+
+      refute_received {:resolver_entered, :dataloader_name, _}
+      refute_received {:dataloader_post_resolved, _}
+      unless preload?, do: refute_received({:dataloader_loaded, _})
+
+      expected =
+        for {person, id} <- Enum.with_index(initial_people, 1) do
+          Map.merge(person, %{
+            "first" => Schema.dataloader_name(id),
+            "second" => Schema.dataloader_name(id)
+          })
+        end
+
+      assert {%{"people" => ^expected}, payloads} = Incremental.consume(result)
+
+      assert Enum.sort(received_dataloader_keys()) == [1, 2]
+
+      for id <- 1..2, _group <- 1..2 do
+        assert_received {:resolver_entered, :dataloader_name, ^id}
+        assert_received {:dataloader_post_resolved, ^id}
+      end
+
+      refute_received {:resolver_entered, :dataloader_name, _}
+      refute_received {:dataloader_post_resolved, _}
+
+      assert Enum.sort(
+               for payload <- payloads,
+                   notice <- Map.get(payload, :pending, []),
+                   do: {notice.path, notice.label}
+             ) == [
+               {["people", 0], "first"},
+               {["people", 0], "second"},
+               {["people", 1], "first"},
+               {["people", 1], "second"}
+             ]
+    end
+  end
+
+  test "chained dataloader callbacks inside nested defers reuse initial and deferred loads", %{
+    options: options
+  } do
+    query = """
+    { people {
+      id
+      dataloaderName
+      ... @defer(label: "friend") {
+        dataloaderFriend {
+          id
+          ... @defer(label: "name") { dataloaderFriendName }
+        }
+      }
+    } }
+    """
+
+    assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
+
+    assert result.initial_result.data == %{
+             "people" => [
+               %{"id" => "1", "dataloaderName" => "Edsger"},
+               %{"id" => "2", "dataloaderName" => "Dataloader 2"}
+             ]
+           }
+
+    refute_received {:dataloader_friends_loaded, _}
+    refute_received {:friend_name_resolved, _}
+
+    assert {data, payloads} = Incremental.consume(result)
+
+    assert data == %{
+             "people" => [
+               %{
+                 "id" => "1",
+                 "dataloaderName" => "Edsger",
+                 "dataloaderFriend" => %{
+                   "id" => "2",
+                   "dataloaderFriendName" => "Dataloader 3"
+                 }
+               },
+               %{
+                 "id" => "2",
+                 "dataloaderName" => "Dataloader 2",
+                 "dataloaderFriend" => %{
+                   "id" => "3",
+                   "dataloaderFriendName" => "Edsger"
+                 }
+               }
+             ]
+           }
+
+    assert Enum.sort(received_dataloader_keys()) == [1, 2, 3]
+    assert Enum.sort(received_dataloader_keys(:dataloader_friends_loaded)) == [1, 2, 3]
+    assert_received {:friend_name_resolved, 2}
+    assert_received {:friend_name_resolved, 3}
+    refute_received {:friend_name_resolved, _}
+
+    assert Enum.sort(
+             for payload <- payloads,
+                 notice <- Map.get(payload, :pending, []),
+                 do: {notice.path, notice.label}
+           ) == [
+             {["people", 0], "friend"},
+             {["people", 0, "dataloaderFriend"], "name"},
+             {["people", 1], "friend"},
+             {["people", 1, "dataloaderFriend"], "name"}
+           ]
+  end
+
+  defp received_dataloader_keys(tag \\ :dataloader_loaded) do
+    receive do
+      {^tag, keys} -> MapSet.to_list(keys) ++ received_dataloader_keys(tag)
+    after
+      0 -> []
+    end
   end
 end

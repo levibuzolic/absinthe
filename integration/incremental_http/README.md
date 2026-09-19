@@ -73,8 +73,9 @@ released package.
 The HTTP regressions require correct final data and normalized cache contents
 for inner prefixes zero and one against both Absinthe and GraphQL.js. Cancellation
 runs with `--unhandled-rejections=strict`, without a rejection handler. It checks
-three Absinthe cancellations and a reference cancellation, socket closure,
-worker termination, and exact resolver traces.
+four Absinthe cancellations and a reference cancellation, socket closure,
+worker termination, and exact resolver traces. Aborting a blocked deferred
+parent prevents its child resolvers from starting.
 
 ## meros parser fix
 

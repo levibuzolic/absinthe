@@ -46,11 +46,13 @@ defmodule IncrementalHTTP.Schema do
     |> Absinthe.Middleware.Async.call(task)
   end
 
-  def trace(source, _, resolution) do
+  def trace(source, args, resolution) do
     IncrementalHTTP.Bridge.event(resolution.context.request_id, %{
       event: "resolved",
       path: Absinthe.Resolution.path(resolution)
     })
+
+    if args[:wait], do: wait_for_release(resolution)
 
     key = resolution.definition.schema_node.identifier
     {:ok, Map.get(source, key)}
@@ -58,14 +60,18 @@ defmodule IncrementalHTTP.Schema do
 
   def slow(source, args, resolution) do
     trace(source, args, resolution)
+    wait_for_release(resolution)
+    {:ok, "released"}
+  end
 
+  defp wait_for_release(resolution) do
     IncrementalHTTP.Bridge.event(resolution.context.request_id, %{
       event: "blocked",
       path: Absinthe.Resolution.path(resolution)
     })
 
     receive do
-      :release_resolver -> {:ok, "released"}
+      :release_resolver -> :ok
     after
       15_000 -> raise "timed out waiting for :release_resolver"
     end
@@ -95,7 +101,12 @@ defmodule IncrementalHTTP.Schema do
 
     field :name, :string, resolve: &__MODULE__.trace/3
     field :age, :integer, resolve: &__MODULE__.trace/3
-    field :friend, :person, resolve: &__MODULE__.trace/3
+
+    field :friend, :person do
+      arg :wait, :boolean, default_value: false
+      resolve &__MODULE__.trace/3
+    end
+
     field :friends, list_of(:person), resolve: &__MODULE__.trace/3
 
     field :failure, :string do
