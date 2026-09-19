@@ -76,18 +76,18 @@ defmodule Absinthe.Incremental.Delivery do
   defp publish(state) do
     ready =
       state.completion_candidates
+      |> :gb_sets.to_list()
       |> Enum.filter(fn ref ->
         group = state.groups[ref]
         group.id != nil and not group.done and not State.has_work?(state, ref)
       end)
-      |> Enum.sort()
 
-    state = %{state | completion_candidates: MapSet.new()}
+    state = %{state | completion_candidates: :gb_sets.empty()}
     {entries, extensions, state} = flush(state, ready)
     {completed, state} = complete(state, ready)
     {pending, state} = announce(state)
 
-    if MapSet.size(state.completion_candidates) == 0 do
+    if :gb_sets.is_empty(state.completion_candidates) do
       {entries, extensions, completed, pending, state}
     else
       {more, later_extensions, later_completed, later_pending, state} = publish(state)
