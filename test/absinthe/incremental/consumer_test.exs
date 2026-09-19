@@ -30,6 +30,42 @@ defmodule Absinthe.Incremental.ConsumerTest do
              Incremental.consume(result)
   end
 
+  test "rejects unexpected errors in ordinary results, initial results, patches and completions" do
+    result = incremental_result(%{}, [], %{"value" => 1})
+    [update] = result.subsequent_results
+    [patch] = update.incremental
+    [completion] = update.completed
+    errors = [%{message: "unexpected", path: ["value"]}]
+
+    for result <- [
+          %{data: %{"value" => 1}, errors: errors},
+          %{result | initial_result: Map.put(result.initial_result, :errors, errors)},
+          %{
+            result
+            | subsequent_results: [%{update | incremental: [Map.put(patch, :errors, errors)]}]
+          },
+          %{
+            result
+            | subsequent_results: [%{update | completed: [Map.put(completion, :errors, errors)]}]
+          }
+        ] do
+      assert_raise ExUnit.AssertionError, fn -> Incremental.consume(result) end
+      assert {%{"value" => 1}, _} = Incremental.consume(result, expect_errors: true)
+    end
+
+    assert_raise ExUnit.AssertionError, fn ->
+      Incremental.consume(result, expect_errors: true)
+    end
+  end
+
+  test "rejects empty error lists even when errors are expected" do
+    result = %{data: %{"value" => 1}, errors: []}
+
+    for options <- [[], [expect_errors: true]] do
+      assert_raise ExUnit.AssertionError, fn -> Incremental.consume(result, options) end
+    end
+  end
+
   defp incremental_result(data, path, fields) do
     %Absinthe.Incremental{
       initial_result: %{

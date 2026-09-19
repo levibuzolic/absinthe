@@ -540,7 +540,7 @@ defmodule Absinthe.Integration.Execution.IncrementalDeliveryTest do
     assert {:ok, deferred} =
              Absinthe.run_incremental("{ ... @defer { matrix } }", Schema, options)
 
-    {data, payloads} = Incremental.consume(deferred)
+    {data, payloads} = Incremental.consume(deferred, expect_errors: true)
     assert data == eager.data
 
     assert [%{errors: [%{path: ["matrix", 1, 0]}]}] =
@@ -591,13 +591,7 @@ defmodule Absinthe.Integration.Execution.IncrementalDeliveryTest do
   end
 
   defp reconstruct(result) do
-    {data, payloads} = Incremental.consume(result)
-
-    for payload <- payloads,
-        notice <- Map.get(payload, :completed, []) do
-      refute Map.has_key?(notice, :errors)
-    end
-
+    {data, _payloads} = Incremental.consume(result)
     data
   end
 end

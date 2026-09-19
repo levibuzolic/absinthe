@@ -116,11 +116,7 @@ defmodule Absinthe.Incremental.LifecycleTest do
       query = "{ person { #{Enum.join(selections, " ")} } }"
       assert {:ok, %{data: expected}} = Absinthe.run(query, Schema, options)
       assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
-      assert {^expected, payloads} = Incremental.consume(result)
-
-      for payload <- payloads, completion <- Map.get(payload, :completed, []) do
-        refute Map.has_key?(completion, :errors)
-      end
+      assert {^expected, _payloads} = Incremental.consume(result)
     end
   end
 
@@ -185,7 +181,9 @@ defmodule Absinthe.Incremental.LifecycleTest do
                context: %{test_pid: self()}
              )
 
-    assert {%{"person" => %{"child" => nil}}, payloads} = Incremental.consume(result)
+    assert {%{"person" => %{"child" => nil}}, payloads} =
+             Incremental.consume(result, expect_errors: true)
+
     assert [%{label: "outer"}] = Enum.flat_map(payloads, &Map.get(&1, :pending, []))
 
     assert [%{message: "failed", path: ["person", "child", "requiredFailure"]}] =
@@ -298,10 +296,6 @@ defmodule Absinthe.Incremental.LifecycleTest do
     assert {%{"redactedPerson" => nil}, payloads} = Incremental.consume(result)
 
     assert [%{label: "outer"}] = Enum.flat_map(payloads, &Map.get(&1, :pending, []))
-
-    for payload <- payloads, completion <- Map.get(payload, :completed, []) do
-      refute Map.has_key?(completion, :errors)
-    end
   end
 
   test "redacting a list cancels its stream tail and deferred items during initial and later work" do
@@ -353,7 +347,7 @@ defmodule Absinthe.Incremental.LifecycleTest do
 
   defp assert_surviving_child(query, options) do
     assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
-    assert {data, payloads} = Incremental.consume(result)
+    assert {data, payloads} = Incremental.consume(result, expect_errors: true)
     assert data == %{"person" => %{"name" => "Ada", "age" => 37}}
 
     %{id: failed_id} = Enum.find(result.initial_result.pending, &(&1.label == "b"))

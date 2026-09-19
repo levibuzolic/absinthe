@@ -123,7 +123,7 @@ export function observe(
       server.next(id);
       await wait(() => raw.length > count, "next parsed multipart payload");
     },
-    async finish() {
+    async finish({ expectErrors = false } = {}) {
       await wait(() => raw.length > 0, "first parsed response");
       while (raw.at(-1).hasNext === true) await this.next();
       await wait(
@@ -143,6 +143,11 @@ export function observe(
         "Apollo parsed the unmodified Absinthe payloads over HTTP",
       );
       assertLifecycle(raw);
+      assert.equal(
+        results.some((result) => result.error != null),
+        expectErrors,
+        `${id}: GraphQL errors across all client results match the expectation`,
+      );
       return results.at(-1);
     },
   };

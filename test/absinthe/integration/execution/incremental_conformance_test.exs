@@ -118,7 +118,7 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
     } }
     """
 
-    {data, payloads} = execute(query, options)
+    {data, payloads} = execute(query, options, expect_errors: true)
     assert data == %{"node" => %{"child" => %{"b" => "b", "c" => "c"}}}
     assert completion(payloads, "fails").errors |> length() == 1
     refute Map.has_key?(completion(payloads, "survives"), :errors)
@@ -143,7 +143,7 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
     }
     """
 
-    {data, payloads} = execute(query, options)
+    {data, payloads} = execute(query, options, expect_errors: true)
     assert data == %{"node" => %{"a" => "a", "child" => %{"a" => "a"}}}
     assert Map.has_key?(completion(payloads, "fails"), :errors)
     refute Map.has_key?(completion(payloads, "outer"), :errors)
@@ -160,7 +160,7 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
 
     leaf = %{a: "a", b: "b", child: %{a: "hidden"}}
     options = Keyword.put(options, :root_value, %{node: %{nodes: [leaf, leaf]}})
-    {data, _} = execute(query, options)
+    {data, _} = execute(query, options, expect_errors: true)
     expected = %{"a" => "a", "b" => "b", "child" => nil}
     assert data == %{"node" => %{"nodes" => [expected, expected]}}
     refute_received {:conformance_resolved, ["node", "nodes", 0, "child", "a"]}
@@ -204,7 +204,7 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
     } }
     """
 
-    {data, payloads} = execute(query, options)
+    {data, payloads} = execute(query, options, expect_errors: true)
     assert Map.has_key?(completion(payloads, "fails"), :errors)
     refute Map.has_key?(completion(payloads, "survives"), :errors)
     assert data == %{"node" => %{"child" => %{"b" => "b"}}}
@@ -222,7 +222,7 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
     fragment Deep on Node { child { b } }
     """
 
-    {data, payloads} = execute(query, options)
+    {data, payloads} = execute(query, options, expect_errors: true)
     assert Map.has_key?(completion(payloads, "fails"), :errors)
     assert data == %{"node" => %{"a" => "a"}}
     refute Enum.any?(Enum.flat_map(payloads, &Map.get(&1, :pending, [])), &(&1[:label] == "deep"))
@@ -241,7 +241,7 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
     """
 
     for location <- [nil, %Absinthe.Blueprint.SourceLocation{line: 1, column: 1}] do
-      {data, payloads} = execute(query, with_locations(options, location))
+      {data, payloads} = execute(query, with_locations(options, location), expect_errors: true)
 
       assert Map.has_key?(completion(payloads, "fails"), :errors)
       assert data == %{"node" => %{"a" => "a", "child" => %{"b" => "b"}}}
@@ -334,7 +334,7 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
     } }
     """
 
-    {data, payloads} = execute(query, options)
+    {data, payloads} = execute(query, options, expect_errors: true)
     assert data == %{"node" => %{"child" => %{"b" => "b"}}}
 
     for label <- ["first", "second"] do
@@ -377,19 +377,15 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
   end
 
   defp assert_data(query, options, expected) do
-    {actual, payloads} = execute(query, options)
+    {actual, _payloads} = execute(query, options)
     assert actual == expected
-
-    for payload <- payloads,
-        notice <- Map.get(payload, :completed, []),
-        do: refute(Map.has_key?(notice, :errors))
   end
 
-  defp execute(query, options) do
+  defp execute(query, options, consume_options \\ []) do
     assert {:ok, %Absinthe.Incremental{} = result} =
              Absinthe.run_incremental(query, Schema, options)
 
-    Incremental.consume(result)
+    Incremental.consume(result, consume_options)
   end
 
   defp completion(payloads, label) do

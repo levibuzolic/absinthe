@@ -171,7 +171,8 @@ defmodule Absinthe.Incremental.SuspendedFailureTest do
     refute_received ^resolved_message
     refute_received :survivor_resolved
 
-    assert {%{"broken" => %{}, "survivor" => "alive"}, payloads} = Incremental.consume(result)
+    assert {%{"broken" => %{}, "survivor" => "alive"}, payloads} =
+             Incremental.consume(result, expect_errors: true)
 
     assert [%{id: ^failed_id, errors: [%{message: ^message, path: ["broken", ^field]}]}] =
              for(
@@ -216,7 +217,7 @@ defmodule Absinthe.Incremental.SuspendedFailureTest do
     refute_received :survivor_resolved
 
     expected = %{field => expected_items, "survivor" => "alive"}
-    assert {^expected, payloads} = Incremental.consume(result)
+    assert {^expected, payloads} = Incremental.consume(result, expect_errors: true)
 
     errors =
       for payload <- payloads,

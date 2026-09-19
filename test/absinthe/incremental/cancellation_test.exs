@@ -65,7 +65,7 @@ defmodule Absinthe.Incremental.CancellationTest do
              )
 
     assert {%{"node" => %{"child" => %{"value" => 2}}}, payloads} =
-             Incremental.consume(result)
+             Incremental.consume(result, expect_errors: true)
 
     assert labels(payloads) == ["fails", "survives"]
     refute_received :resolved_hidden
@@ -91,7 +91,7 @@ defmodule Absinthe.Incremental.CancellationTest do
                context: %{test_pid: self()}
              )
 
-    assert {%{"node" => %{}}, payloads} = Incremental.consume(result)
+    assert {%{"node" => %{}}, payloads} = Incremental.consume(result, expect_errors: true)
     assert labels(payloads) == ["a", "b"]
 
     assert 2 ==
@@ -133,7 +133,9 @@ defmodule Absinthe.Incremental.CancellationTest do
                 "child" => %{"children" => [%{"hidden" => "hidden"}, %{"hidden" => "hidden"}]},
                 "value" => 9
               }
-            }, [initial, shared, failed | later]} = Incremental.consume(result)
+            },
+            [initial, shared, failed | later]} =
+             Incremental.consume(result, expect_errors: true)
 
     assert [%{id: a, label: "a"}, %{id: b, label: "b"}, %{id: c, label: "c"}] =
              initial.pending
