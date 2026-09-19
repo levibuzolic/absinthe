@@ -63,6 +63,9 @@ front end.
 So far, we include specialized support for Phoenix and Plug on the backend,
 and [Relay](https://relay.dev/) on the frontend.
 
+Absinthe also supports opt-in incremental delivery with `@defer` and `@stream`;
+see the [incremental delivery guide](guides/incremental-delivery.md).
+
 Of course we work out of the box with other frontend frameworks and GraphQL
 clients, too.
 

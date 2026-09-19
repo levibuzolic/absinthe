@@ -104,6 +104,10 @@ Coverage includes:
   markers, closed sockets and stopped request workers.
 - Relay named fragments, deduplicated deferred ancestors, abstract types and
   discriminators, nullable streamed items and error paths.
+- Deferred groups that acquire their first work only after a shared linked
+  field resolves, including progressive fragment reads and resolver-once checks.
+- Reused eager fragments retaining their abstract-type discriminators when
+  deferred snapshots omit unrelated fields.
 - Compiled `@stream_connection`, deferred page info, cursor pagination, and
   subsequent null-edge pages without duplicate nodes or cursor warnings.
 - Overlapping Relay and Apollo requests to the same endpoint, each retaining
@@ -130,7 +134,7 @@ unsupported-only choices. The Relay negotiation parameter is application-defined
 
 ## Verification limits
 
-The clean-install runner passed **52 tests** locally on 2026-09-19: **27 Relay/mixed-client**
+The clean-install runner passed **54 tests** locally on 2026-09-19: **29 Relay/mixed-client**
 and **25 locally patched Apollo**, with no failures or skips, using the pinned
 runtimes. Compilation and formatting checks also passed.
 

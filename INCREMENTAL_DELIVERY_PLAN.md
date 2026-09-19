@@ -73,7 +73,9 @@ The scheduler relies on these invariants:
 - **Every announced group completes once.** String IDs identify pending work;
   paths use response aliases and list indices. Each publication pass selects
   completion-ready groups once, publishes their successful values, then emits
-  completion notices. The final payload has `hasNext: false`.
+  completion notices. A group that first acquires work while resolving a shared
+  object becomes eligible for announcement then; empty initial groups are not
+  permanently discarded. The final payload has `hasNext: false`.
 
 Result completion propagates nulls from children to parents in the recursive
 walk. Resuming suspended fields uses the same bottom-up order when substituting
@@ -101,7 +103,11 @@ string escaping.
 `incremental_format: :relay` selects the labeled response format expected by
 Relay 21.0.1. The formatter retains delivered data to normalize compiled
 fragments, including shared fields and deferred ancestors with no independent
-work. Compiled connections stream edges and defer page info. The client uses
+work. Existing field collection summarizes response keys at each group's path;
+snapshots omit unrelated top-level fields and their errors, while linked values
+remain intact. Applicable spreads skipped by fragment deduplication retain full
+snapshots, preserving fields and abstract discriminators the summary cannot
+enumerate. Compiled connections stream edges and defer page info. The client uses
 `deferDeduplicatedFields: true` and an Observable network with completion checks.
 
 Failed incremental boundaries terminate the Relay operation. Nullable streamed
@@ -120,6 +126,11 @@ subscription usages must be disableable, active directives fail when reached,
 and the final response has `hasNext: false`. Scheduling policy is
 implementation-defined where the draft leaves work-queue behavior unspecified.
 
+Stream overlap checks follow the pinned field-merging algorithm: direct pairs
+cannot contain a stream, while recursive child sets merge only for matching
+or abstract parent types. Different concrete parent alternatives remain
+independent through deeper child selections.
+
 Reference probes against GraphQL.js revision
 [`ee5ce41d4b68d1852306d3b56dba2cbbb6c43fea`](https://github.com/graphql/graphql-js/tree/ee5ce41d4b68d1852306d3b56dba2cbbb6c43fea)
 confirmed shared-work survival, withholding private data until an owner succeeds,
@@ -137,7 +148,7 @@ normalization and continuation demand.
 | Draft requirement | Representative executable coverage |
 | --- | --- |
 | Directive types, defaults and ordinary coercion | `incremental_directives_test.exs`, `incremental_coercion_test.exs`, SDL-render tests |
-| Document-unique literal labels, operation/root restrictions, overlapping streams | `validation/incremental_test.exs`, `incremental_subscription_test.exs` |
+| Document-unique literal labels, operation/root restrictions, overlapping streams | `validation/incremental_test.exs`, `validation/stream_overlap_test.exs`, `incremental_subscription_test.exs` |
 | Shared/ancestor field ownership and applicable fragments | `incremental_conformance_test.exs`, `abstract_types_test.exs`, the 768-case collection matrix |
 | Stream prefixes and nullable/non-null list boundaries | `incremental_delivery_test.exs`, `execution_test.exs`, `suspended_failure_test.exs` |
 | Serial mutation roots across suspension | `mutation_order_test.exs`, compiled Relay mutation HTTP cases |
@@ -150,16 +161,16 @@ unqualified claim of literal adherence to every sentence.
 
 ## Test coverage
 
-The branch adds 167 incremental test declarations and two SDL-export regressions.
+The branch adds 177 incremental test declarations and two SDL-export regressions.
 The tests cover:
 
 | Area | Cases and assertions |
 | --- | --- |
 | Schema and validation | Defaults, coercion, custom directives alongside built-ins, adapted names, labels, skipped selections, reused fragments, unselected operations, and all overlapping-stream pairs |
 | Collection and delivery | Aliases, abstract types, nested defer/stream, shared fields, location-free directive identity, parsed-document inputs, initial omission, prefix limits, resolver-once behavior, and final reconstructed data |
-| Errors and lifecycle | Initial/deferred/streamed failures, mixed synchronous/suspended sibling errors, nullable and non-null boundaries, shared-owner cancellation, formatter redaction, error paths/locations/extensions, and early halt |
+| Errors and lifecycle | Initial/deferred/streamed failures, mixed synchronous/suspended sibling errors, nullable and non-null boundaries, shared-owner cancellation, initially empty groups acquiring work, formatter redaction, error paths/locations/extensions, and early halt |
 | Middleware and options | Async, Batch, Dataloader, repeated suspension, serial mutations, context, callbacks, custom execution/result phases, and continuation errors |
-| Relay | Labeled snapshots, ancestor ordering, absolute stream indices, scoped errors, null replay, opaque scalar structs, reserved extension keys and early halt |
+| Relay | Projected snapshots, reused-fragment discriminators, ancestor ordering, absolute stream indices, scoped errors, null replay, opaque scalar structs, reserved extension keys and early halt |
 | Consumer contract | Unique pending IDs, owned updates, valid list indices, duplicate-field rejection, exactly-once completion, and terminal state |
 
 One test checks 768 deterministic combinations of shared defer parents, nested
@@ -183,8 +194,17 @@ The diagnostic `mix run benchmarks/incremental_delivery.exs` reports median
 initial and continuation times for nullable values, shared groups, nested groups,
 streams containing deferred fields, and reused named fragments. A separate
 one-row scenario scales document aliases to measure larger initial documents.
-These measurements are not CI timing assertions. Cancellation after actual
-failures still scans queued work.
+It also reports median continuation time and the total delivered top-level
+data-field count for root-sibling `@defer` groups at 10, 100, and 500 groups in
+both `:draft` and `:relay` formats. That count captures repeated snapshots,
+especially in Relay, rather than serialized JSON bytes. These measurements are
+not CI timing assertions. Cancellation after actual failures still scans queued
+work.
+
+For 500 independent sibling root groups, both formats deliver 500 data fields;
+Relay previously delivered 125,250 before limiting snapshots to known fields.
+Linked values and deduplicated fragments can still require broader snapshots,
+so these results do not establish linear output for every query shape.
 
 ## Verification
 
@@ -192,14 +212,14 @@ Local checks on 2026-09-19:
 
 | Check | Result |
 | --- | --- |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,672 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,672 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,672 tests, zero failures, 3 existing exclusions |
-| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,672 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, compiled provider | 1,682 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.20.3 / OTP 29.0.5, persistent-term provider | 1,682 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, compiled provider | 1,682 tests, zero failures, 3 existing exclusions |
+| Clean full suite, Elixir 1.19.5 / OTP 28.5, persistent-term provider | 1,682 tests, zero failures, 3 existing exclusions |
 | `mix dialyzer` | Zero errors; ignore entries unchanged |
 | Formatting and `git diff --check` | Passed |
 | `mix docs` | Passed with existing documentation warnings |
-| Integrated HTTP harness | 52 passed: 27 Relay/mixed-client, 25 locally patched Apollo; no failures or skips |
+| Integrated HTTP harness | 54 passed: 29 Relay/mixed-client, 25 locally patched Apollo; no failures or skips |
 
 Full suites use `mix test --warnings-as-errors`. None of the incremental tests
 is skipped. These local runs do not cover every operating system or CI runtime
