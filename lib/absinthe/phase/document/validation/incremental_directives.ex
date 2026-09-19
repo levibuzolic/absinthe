@@ -51,40 +51,9 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalDirectives do
     {:ok, %{input | errors: input.errors ++ Enum.reverse(Enum.uniq(errors))}}
   end
 
-  defp validate_node(%Blueprint.Directive{} = directive, {labels, errors}) do
-    if Directives.identifier(directive) do
-      case raw_argument(directive, :label) do
-        %Input.Variable{} ->
-          {directive,
-           {labels,
-            [
-              error("Directive `#{directive.name}` label must be a string literal.", directive)
-              | errors
-            ]}}
-
-        %Input.String{value: label} ->
-          case Map.fetch(labels, label) do
-            {:ok, previous} ->
-              {directive,
-               {labels,
-                [
-                  error("Incremental directive label `#{label}` must be unique.", [
-                    previous,
-                    directive
-                  ])
-                  | errors
-                ]}}
-
-            :error ->
-              {directive, {Map.put(labels, label, directive), errors}}
-          end
-
-        _ ->
-          {directive, {labels, errors}}
-      end
-    else
-      {directive, {labels, errors}}
-    end
+  defp validate_node(%Blueprint.Directive{} = directive, acc) do
+    acc = if Directives.identifier(directive), do: validate_label(directive, acc), else: acc
+    {directive, acc}
   end
 
   defp validate_node(%Document.Field{schema_node: %{type: type}} = field, {labels, errors}) do
@@ -106,6 +75,36 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalDirectives do
   end
 
   defp validate_node(node, acc), do: {node, acc}
+
+  defp validate_label(directive, {labels, errors}) do
+    case raw_argument(directive, :label) do
+      %Input.Variable{} ->
+        {labels,
+         [
+           error("Directive `#{directive.name}` label must be a string literal.", directive)
+           | errors
+         ]}
+
+      %Input.String{value: label} ->
+        case Map.fetch(labels, label) do
+          {:ok, previous} ->
+            {labels,
+             [
+               error("Incremental directive label `#{label}` must be unique.", [
+                 previous,
+                 directive
+               ])
+               | errors
+             ]}
+
+          :error ->
+            {Map.put(labels, label, directive), errors}
+        end
+
+      _ ->
+        {labels, errors}
+    end
+  end
 
   defp list_type?(%Type.NonNull{of_type: type}), do: list_type?(type)
   defp list_type?(%Type.List{}), do: true
