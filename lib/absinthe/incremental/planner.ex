@@ -69,8 +69,7 @@ defmodule Absinthe.Incremental.Planner do
             State.group(res.incremental, %{
               kind: :stream,
               path: State.path(res.path),
-              label: args[:label],
-              parent: nil
+              label: args[:label]
             })
 
           state =

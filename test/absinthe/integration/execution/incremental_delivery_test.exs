@@ -500,8 +500,6 @@ defmodule Absinthe.Integration.Execution.IncrementalDeliveryTest do
     refute_received {:resolved, _}
   end
 
-  # An in-process payload consumer checks the relationships between notices,
-  # results, and completion, independently of the executor's scheduling policy.
   defp reconstruct(result) do
     {data, payloads} = Incremental.consume(result)
 

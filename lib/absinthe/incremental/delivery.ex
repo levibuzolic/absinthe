@@ -145,7 +145,6 @@ defmodule Absinthe.Incremental.Delivery do
     group =
       frame.groups
       |> Enum.map(&state.groups[&1])
-      |> Enum.filter(& &1.id)
       |> Enum.max_by(&length(&1.path))
 
     sub_path = Enum.drop(State.path(frame.path), length(group.path))
@@ -269,15 +268,7 @@ defmodule Absinthe.Incremental.Delivery do
     state = State.cancel_waiters(%{state | buffered: buffered}, dependencies)
 
     Enum.reduce(failed, state, fn ref, state ->
-      %{
-        state
-        | groups:
-            Map.update!(
-              state.groups,
-              ref,
-              &(&1 |> Map.put(:errors, errors) |> Map.put(:buffered, []))
-            )
-      }
+      update_in(state.groups[ref], &Map.merge(&1, %{errors: errors, buffered: []}))
     end)
   end
 

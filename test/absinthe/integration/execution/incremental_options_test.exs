@@ -79,15 +79,6 @@ defmodule Absinthe.Integration.Execution.IncrementalOptionsTest do
     end
   end
 
-  defmodule ExtensionResult do
-    use Absinthe.Phase
-
-    def run(blueprint, options) do
-      {:ok, blueprint} = Phase.Document.Result.run(blueprint, options)
-      {:ok, put_in(blueprint.result[:extensions], %{formatted: true})}
-    end
-  end
-
   defmodule RejectExecution do
     use Absinthe.Phase
 
@@ -217,7 +208,7 @@ defmodule Absinthe.Integration.Execution.IncrementalOptionsTest do
 
   test "custom result extensions reach initial, deferred, and streamed payloads" do
     modifier = fn pipeline, _ ->
-      Pipeline.replace(pipeline, Phase.Document.Result, ExtensionResult)
+      Pipeline.replace(pipeline, Phase.Document.Result, CustomResult)
     end
 
     assert {:ok, result} =
@@ -225,9 +216,9 @@ defmodule Absinthe.Integration.Execution.IncrementalOptionsTest do
                pipeline_modifier: modifier
              )
 
-    assert result.initial_result.extensions == %{formatted: true}
+    assert result.initial_result.extensions == %{custom: true}
     payloads = Enum.to_list(result.subsequent_results)
-    assert Enum.all?(payloads, &(&1.extensions == %{formatted: true}))
+    assert Enum.all?(payloads, &(&1.extensions == %{custom: true}))
 
     assert Enum.any?(
              payloads,

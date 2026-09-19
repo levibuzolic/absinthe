@@ -180,7 +180,7 @@ defmodule Absinthe.Integration.Execution.IncrementalSubscriptionTest do
                     }}
   end
 
-  test "skip and include conditions take precedence during event execution" do
+  test "a skipped inline fragment does not activate defer during event execution" do
     document = """
     subscription($later: Boolean!, $topic: String!) {
       event(topic: $topic) {

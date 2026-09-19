@@ -13,6 +13,8 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
 
       field :async_name, :string do
         resolve fn %{id: id}, _, %{context: %{test_pid: pid}} ->
+          send(pid, {:resolver_entered, :async_name, id})
+
           async(fn ->
             send(pid, {:async_resolved, id})
             {:ok, async_name(id)}
@@ -22,6 +24,8 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
 
       field :batch_name, :string do
         resolve fn %{id: id}, _, %{context: %{test_pid: pid}} ->
+          send(pid, {:resolver_entered, :batch_name, id})
+
           batch({__MODULE__, :load_batch_name, pid}, id, fn values ->
             send(pid, {:batch_post_resolved, id})
             {:ok, Map.fetch!(values, id)}
@@ -40,6 +44,8 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
 
       field :dataloader_name, :string do
         resolve fn %{id: id}, _, %{context: %{loader: loader, test_pid: pid}} ->
+          send(pid, {:resolver_entered, :dataloader_name, id})
+
           loader
           |> Dataloader.load(:test, {:name, pid}, id)
           |> on_load(fn loader ->
@@ -129,11 +135,12 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
     assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
     assert result.initial_result.data == %{"person" => %{"id" => "1"}}
 
-    refute_receive {:async_resolved, _}, 100
-    refute_receive {:batch_loaded, _}, 100
-    refute_receive {:batch_post_resolved, _}, 100
-    refute_receive {:dataloader_loaded, _}, 100
-    refute_receive {:dataloader_post_resolved, _}, 100
+    refute_received {:resolver_entered, _, _}
+    refute_received {:async_resolved, _}
+    refute_received {:batch_loaded, _}
+    refute_received {:batch_post_resolved, _}
+    refute_received {:dataloader_loaded, _}
+    refute_received {:dataloader_post_resolved, _}
 
     payloads = Enum.to_list(result.subsequent_results)
     assert List.last(payloads).hasNext == false
@@ -150,6 +157,10 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
              "dataloaderName" => "Edsger"
            }
 
+    assert_received {:resolver_entered, :async_name, 1}
+    assert_received {:resolver_entered, :batch_name, 1}
+    assert_received {:resolver_entered, :dataloader_name, 1}
+    refute_received {:resolver_entered, _, _}
     assert_received {:async_resolved, 1}
     assert_received {:batch_loaded, [1]}
     assert_received {:batch_post_resolved, 1}
@@ -184,19 +195,23 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
            }
 
     assert_received :people_resolved
-    refute_receive :people_resolved, 100
+    refute_received :people_resolved
+    assert_received {:resolver_entered, :async_name, 1}
+    assert_received {:resolver_entered, :batch_name, 1}
+    assert_received {:resolver_entered, :dataloader_name, 1}
+    refute_received {:resolver_entered, _, _}
     assert_received {:async_resolved, 1}
-    refute_receive {:async_resolved, 2}, 100
+    refute_received {:async_resolved, 2}
     assert_received {:batch_loaded, [1]}
-    refute_receive {:batch_loaded, [2]}, 100
+    refute_received {:batch_loaded, [2]}
     assert_received {:batch_post_resolved, 1}
-    refute_receive {:batch_post_resolved, 2}, 100
+    refute_received {:batch_post_resolved, 2}
     keys = MapSet.new([1])
     assert_received {:dataloader_loaded, ^keys}
     keys = MapSet.new([2])
-    refute_receive {:dataloader_loaded, ^keys}, 100
+    refute_received {:dataloader_loaded, ^keys}
     assert_received {:dataloader_post_resolved, 1}
-    refute_receive {:dataloader_post_resolved, 2}, 100
+    refute_received {:dataloader_post_resolved, 2}
 
     payloads = Enum.to_list(result.subsequent_results)
     assert List.last(payloads).hasNext == false
@@ -214,6 +229,10 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
              end)
            end)
 
+    assert_received {:resolver_entered, :async_name, 2}
+    assert_received {:resolver_entered, :batch_name, 2}
+    assert_received {:resolver_entered, :dataloader_name, 2}
+    refute_received {:resolver_entered, _, _}
     assert_received {:async_resolved, 2}
     assert_received {:batch_loaded, [2]}
     assert_received {:batch_post_resolved, 2}
@@ -238,7 +257,8 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
 
     assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
     assert result.initial_result.data == %{"person" => %{"id" => "1"}}
-    refute_receive {:batch_loaded, _}, 100
+    refute_received {:resolver_entered, _, _}
+    refute_received {:batch_loaded, _}
 
     payloads = Enum.to_list(result.subsequent_results)
     assert List.last(payloads).hasNext == false
@@ -251,7 +271,9 @@ defmodule Absinthe.Integration.Execution.IncrementalMiddlewareTest do
 
     assert_receive {:batch_loaded, keys}
     assert Enum.sort(keys) == [1, 1]
-    refute_receive {:batch_loaded, _}
+    refute_received {:batch_loaded, _}
+    assert_received {:resolver_entered, :batch_name, 1}
+    refute_received {:resolver_entered, _, _}
     assert_received {:batch_post_resolved, 1}
     assert_received {:batch_alias_post_resolved, 1}
   end
