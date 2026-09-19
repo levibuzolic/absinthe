@@ -8,7 +8,8 @@ defmodule Absinthe.Phase.Parse do
   # This is because Dialyzer is telling us tokenizing can never fail,
   # but we know it's possible.
   @dialyzer {:no_match, run: 2}
-  @spec run(Language.Source.t() | %Blueprint{}, Keyword.t()) :: Phase.result_t()
+  @spec run(binary | Language.Source.t() | Language.Document.t() | Blueprint.t(), Keyword.t()) ::
+          Phase.result_t()
   def run(input, options \\ [])
 
   def run(%Absinthe.Blueprint{} = blueprint, options) do
@@ -59,11 +60,13 @@ defmodule Absinthe.Phase.Parse do
   # This is because Dialyzer is telling us tokenizing can never fail,
   # but we know it's possible.
   @dialyzer {:no_match, parse: 2}
-  @spec parse(binary | Language.Source.t(), Keyword.t()) ::
+  @spec parse(binary | Language.Source.t() | Language.Document.t(), Keyword.t()) ::
           {:ok, Language.Document.t()} | {:error, tuple}
   defp parse(input, options) when is_binary(input) do
     parse(%Language.Source{body: input}, options)
   end
+
+  defp parse(%Language.Document{} = document, _options), do: {:ok, document}
 
   defp parse(input, options) do
     try do
