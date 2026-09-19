@@ -71,14 +71,11 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
 
   @adapter Absinthe.Adapter.LanguageConventions
   defp render(%Blueprint.Schema.InputValueDefinition{} = input_value, context) do
-    concat([
-      string(@adapter.to_external_name(input_value.name, :argument)),
-      ": ",
-      render(input_value.type, context),
-      default(input_value, context),
-      directives(input_value.directives, context)
-    ])
-    |> description(input_value.description)
+    render_input_value(input_value, context)
+  end
+
+  defp render(%Blueprint.Schema.FieldDefinition{} = field, %{input_object?: true} = context) do
+    render_input_value(field, context)
   end
 
   defp render(%Blueprint.Schema.FieldDefinition{} = field, context) do
@@ -112,7 +109,7 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
         string(input_object_type.name),
         directives(input_object_type.directives, context)
       ]),
-      render_list(input_object_type.fields, context)
+      render_list(input_object_type.fields, Map.put(context, :input_object?, true))
     )
     |> description(input_object_type.description)
   end
@@ -256,6 +253,17 @@ defmodule Absinthe.Schema.Notation.SDL.Render do
   end
 
   # SDL Syntax Helpers
+
+  defp render_input_value(input_value, context) do
+    concat([
+      string(@adapter.to_external_name(input_value.name, :argument)),
+      ": ",
+      render(input_value.type, context),
+      default(input_value, context),
+      directives(input_value.directives, context)
+    ])
+    |> description(input_value.description)
+  end
 
   defp directives([], _) do
     empty()
