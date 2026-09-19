@@ -53,7 +53,7 @@ defmodule Absinthe.Incremental.State do
             next_frame: 0,
             frame: nil,
             waiting: %{},
-            completion_candidates: MapSet.new(),
+            completion_candidates: :gb_sets.empty(),
             buffered: %{}
 
   @typedoc "Scheduling state shared by incremental planning, execution, and delivery."
@@ -67,7 +67,7 @@ defmodule Absinthe.Incremental.State do
           next_frame: non_neg_integer(),
           frame: work() | nil,
           waiting: %{optional(dependency()) => [group_ref()]},
-          completion_candidates: MapSet.t(group_ref()),
+          completion_candidates: :gb_sets.set(group_ref()),
           buffered: %{optional(non_neg_integer()) => {work(), map()}}
         }
 
@@ -139,7 +139,7 @@ defmodule Absinthe.Incremental.State do
 
     candidates =
       if MapSet.size(group.jobs) == 0,
-        do: MapSet.put(state.completion_candidates, ref),
+        do: :gb_sets.add(ref, state.completion_candidates),
         else: state.completion_candidates
 
     %{
@@ -245,8 +245,8 @@ defmodule Absinthe.Incremental.State do
 
       candidates =
         if finished,
-          do: MapSet.put(state.completion_candidates, ref),
-          else: MapSet.delete(state.completion_candidates, ref)
+          do: :gb_sets.add(ref, state.completion_candidates),
+          else: :gb_sets.delete_any(ref, state.completion_candidates)
 
       state = %{
         state
