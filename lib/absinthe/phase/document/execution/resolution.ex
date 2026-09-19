@@ -294,9 +294,11 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   # Absinthe.Phoenix.Controller.Result returns raw source values for objects
   # without subselections and merges them for `@put`).
   def walk_result(%{fields: nil} = result, bp_node, _schema_type, res, path) do
+    pending = res.pending
+
     case resolve_fields(bp_node, res, result.root_value, path) do
       {:ok, fields, res} ->
-        {do_propagate_null_trimming(%{result | fields: fields}), res}
+        complete_container(%{result | fields: fields}, res, pending)
 
       {:error, directive} ->
         error =
@@ -332,9 +334,10 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   def walk_result(%{values: values} = result, bp_node, schema_type, res, path) do
+    pending = res.pending
     %Type.List{of_type: inner_type} = Type.unwrap_non_null(schema_type)
     {values, res} = walk_results(values, bp_node, inner_type, res, [0 | path], [])
-    {do_propagate_null_trimming(%{result | values: values}), res}
+    complete_container(%{result | values: values}, res, pending)
   end
 
   # walk list results
@@ -390,13 +393,14 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   defp resolve_frame(%{kind: :defer} = frame, res) do
+    pending = res.pending
     res = %{res | delivery: frame.groups}
 
     {fields, res} =
       do_resolve_fields(frame.fields, res, frame.source, frame.parent_type, frame.path, [])
 
     result = %Result.Object{root_value: frame.source, emitter: frame.emitter, fields: fields}
-    {do_propagate_null_trimming(result), res}
+    complete_container(result, res, pending)
   end
 
   defp resolve_frame(%{kind: :stream, values: [value | _]} = frame, res) do
@@ -638,6 +642,13 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         emitter = put_in(bp_field.schema_node.type, full_type)
         {emitter, %{res | fields_cache: Map.put(cache, key, emitter)}}
     end
+  end
+
+  # Keep newly suspended children until substitution so null propagation can
+  # retain every completed error. Pending work outside this container is irrelevant.
+  defp complete_container(node, res, pending_before) do
+    node = if res.pending == pending_before, do: do_propagate_null_trimming(node), else: node
+    {node, res}
   end
 
   defp do_propagate_null_trimming(node) do
