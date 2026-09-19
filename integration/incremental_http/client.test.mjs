@@ -92,7 +92,7 @@ test("Apollo retains a nullable failed row in a streamed nested-list prefix", as
   });
   assert.deepEqual(data(await operation.initial()), { matrix: [[1], null] });
   assert.deepEqual(operation.raw[0].errors[0].path, ["matrix", 1, 0]);
-  assert.deepEqual(data(await operation.finish()), {
+  assert.deepEqual(data(await operation.finish({ expectErrors: true })), {
     matrix: [[1], null, [3]],
   });
   assert.deepEqual(data(operation.cached()), { matrix: [[1], null, [3]] });
@@ -104,7 +104,9 @@ test("Apollo retains a nullable failed row in a streamed nested-list prefix", as
   );
 
   const required = observe(t, "{ requiredRows @stream(initialCount: 2) }");
-  assert.deepEqual(data(await required.finish()), { requiredRows: null });
+  assert.deepEqual(data(await required.finish({ expectErrors: true })), {
+    requiredRows: null,
+  });
   assert.equal(required.raw.length, 1);
   assert.deepEqual(required.raw[0].errors[0].path, ["requiredRows", 1, 0]);
   assert.ok(!("pending" in required.raw[0]));
@@ -314,7 +316,7 @@ test("nullable deferred errors retain data, absolute alias paths and locations i
     "{ hero: person { id ... @defer { broken: failure name } } }",
   );
   assert.deepEqual(data(await operation.initial()), { hero: { id: "1" } });
-  const final = await operation.finish();
+  const final = await operation.finish({ expectErrors: true });
   assert.deepEqual(data(final), {
     hero: { id: "1", broken: null, name: "Ada" },
   });
@@ -338,7 +340,7 @@ test("non-null deferred failures complete the ID with errors and suppress descen
   }`,
   );
   assert.deepEqual(data(await operation.initial()), { person: { id: "1" } });
-  const final = await operation.finish();
+  const final = await operation.finish({ expectErrors: true });
   assert.deepEqual(data(final), { person: { id: "1" } });
   assert.deepEqual(final.error.errors[0].path, ["person", "requiredFailure"]);
   assert.equal(
@@ -404,7 +406,7 @@ test("a later failed task cancels a stream whose containing deferred data was ne
   assert.deepEqual(data(await operation.initial()), {
     person: { friend: { id: "2" } },
   });
-  const final = await operation.finish();
+  const final = await operation.finish({ expectErrors: true });
   assert.deepEqual(data(final), { person: { friend: { id: "2" } } });
   assert.deepEqual(final.error.errors[0].path, [
     "person",
@@ -425,7 +427,7 @@ test("a non-null stream tail error preserves the delivered prefix and completes 
     "{ values: requiredNumbers @stream(initialCount: 1) }",
   );
   assert.deepEqual(data(await operation.initial()), { values: [1] });
-  const final = await operation.finish();
+  const final = await operation.finish({ expectErrors: true });
   assert.deepEqual(data(final), { values: [1] });
   assert.deepEqual(final.error.errors[0].path, ["values", 1]);
   assert.ok(operation.raw.at(-1).completed[0].errors.length);
@@ -439,7 +441,7 @@ test("nullable streamed items contain non-null field failures and the stream sti
   assert.deepEqual(data(await operation.initial()), { people: [] });
   await operation.next();
   assert.deepEqual(data(operation.results.at(-1)), { people: [null] });
-  const final = await operation.finish();
+  const final = await operation.finish({ expectErrors: true });
   assert.deepEqual(data(final), { people: [null, null, null] });
   assert.deepEqual(
     final.error.errors.map((e) => e.path),
@@ -465,7 +467,7 @@ test("a completed nested child retains shared data when a later sibling defer fa
   }`,
   );
   assert.deepEqual(data(await operation.initial()), { person: {} });
-  const final = await operation.finish();
+  const final = await operation.finish({ expectErrors: true });
   assert.deepEqual(data(final), { person: { age: 37, name: "Ada" } });
   assert.deepEqual(final.error.errors[0].path, ["person", "requiredFailure"]);
   const notices = operation.raw.flatMap((p) => p.pending ?? []);
@@ -481,7 +483,7 @@ test("initial non-null errors and invalid variables return ordinary GraphQL erro
     t,
     "{ person { requiredFailure ... @defer { name } } }",
   );
-  const result = await failed.finish();
+  const result = await failed.finish({ expectErrors: true });
   assert.deepEqual(data(result), { person: null });
   assert.deepEqual(result.error.errors[0].path, ["person", "requiredFailure"]);
   const invalid = observe(
@@ -491,7 +493,7 @@ test("initial non-null errors and invalid variables return ordinary GraphQL erro
       variables: { count: "wrong" },
     },
   );
-  const invalidResult = await invalid.finish();
+  const invalidResult = await invalid.finish({ expectErrors: true });
   assert.equal(
     invalidResult.error.errors[0].message,
     'Argument "initialCount" has invalid value $count.',

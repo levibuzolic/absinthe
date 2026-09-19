@@ -94,7 +94,7 @@ defmodule Absinthe.Incremental.NestedSuspensionTest do
               assert {:ok, result} = Absinthe.run_incremental(query, Schema, options)
 
               assert {^expected_data, payloads} =
-                       Absinthe.Case.Assertions.Incremental.consume(result)
+                       Absinthe.Case.Assertions.Incremental.consume(result, expect_errors: true)
 
               assert [_, %{incremental: [patch]}] = payloads
               assert patch.data == expected_matrix

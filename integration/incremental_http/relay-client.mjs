@@ -141,7 +141,9 @@ export function observeRelay(
         "worker and HTTP close",
       );
       if (error) throw error;
-      assert.deepEqual(raw, server.sessions.get(id).payloads);
+      const session = server.sessions.get(id);
+      assert.equal(session.stopped, ":normal");
+      assert.deepEqual(raw, session.payloads);
       return this.read();
     },
   };

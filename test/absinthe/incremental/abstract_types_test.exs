@@ -73,7 +73,6 @@ defmodule Absinthe.Incremental.AbstractTypesTest do
     assert result.initial_result.data == %{"results" => [%{"__typename" => "Person"}]}
 
     assert {data, payloads} = Incremental.consume(result)
-    assert_no_errors(payloads)
 
     assert data == %{
              "results" => [
@@ -123,17 +122,6 @@ defmodule Absinthe.Incremental.AbstractTypesTest do
                 %{"__typename" => "Person", "name" => "Ada", "age" => 37},
                 %{"__typename" => "Organization", "name" => "ACME", "slug" => "acme"}
               ]
-            }, payloads} = Incremental.consume(result)
-
-    assert_no_errors(payloads)
-  end
-
-  defp assert_no_errors(payloads) do
-    for payload <- payloads,
-        entry <- [
-          payload | Map.get(payload, :incremental, []) ++ Map.get(payload, :completed, [])
-        ] do
-      refute Map.has_key?(entry, :errors)
-    end
+            }, _payloads} = Incremental.consume(result)
   end
 end

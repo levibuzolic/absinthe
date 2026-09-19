@@ -4,13 +4,37 @@ defmodule Absinthe.Case.Assertions.Incremental do
   @doc """
   Consume an in-process incremental result and reconstruct its delivered data.
 
-  Ordinary result maps are returned unchanged with a one-element payload list.
+  Ordinary results return their data and a one-element payload list.
   Incremental results are checked for valid pending/completion lifecycles and
   reconstructed by applying data and item entries at their announced paths.
+  Errors are rejected unless `expect_errors: true` is set, which requires at
+  least one error. Callers testing failures should also assert their contents.
   """
-  def consume(%{data: data} = result), do: {data, [result]}
+  def consume(result, options \\ []) do
+    {data, payloads} = do_consume(result)
 
-  def consume(%{initial_result: initial, subsequent_results: subsequent}) do
+    error_lists =
+      for payload <- payloads,
+          entry <- [
+            payload | Map.get(payload, :incremental, []) ++ Map.get(payload, :completed, [])
+          ],
+          Map.has_key?(entry, :errors) do
+        assert match?([_ | _], entry.errors), "GraphQL error lists must be nonempty"
+        entry.errors
+      end
+
+    errors = Enum.concat(error_lists)
+    has_errors? = errors != []
+
+    assert has_errors? == Keyword.get(options, :expect_errors, false),
+           "GraphQL errors did not match expectation: #{inspect(errors)}"
+
+    {data, payloads}
+  end
+
+  defp do_consume(%{data: data} = result), do: {data, [result]}
+
+  defp do_consume(%{initial_result: initial, subsequent_results: subsequent}) do
     payloads = [initial | Enum.to_list(subsequent)]
     assert List.last(payloads).hasNext == false
     assert Enum.all?(Enum.drop(payloads, -1), & &1.hasNext)
