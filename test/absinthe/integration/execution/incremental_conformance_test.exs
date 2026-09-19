@@ -3,6 +3,20 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
 
   alias Absinthe.Case.Assertions.Incremental
 
+  defmodule ReplaceLocations do
+    use Absinthe.Phase
+
+    def run(blueprint, options) do
+      location = Keyword.fetch!(options, :location)
+
+      {:ok,
+       Absinthe.Blueprint.prewalk(blueprint, fn
+         %{source_location: _} = node -> %{node | source_location: location}
+         node -> node
+       end)}
+    end
+  end
+
   defmodule Schema do
     use Absinthe.Schema
     use Absinthe.Fixture
@@ -215,6 +229,52 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
     refute_received {:conformance_resolved, ["node", "child"]}
   end
 
+  test "distinct directive occurrences retain surviving owners without unique locations", %{
+    options: options
+  } do
+    query = """
+    { node {
+      ... @defer(label: "fails") { bad ...Shared @defer }
+      ... @defer(label: "survives") { a ...Shared @defer }
+    } }
+    fragment Shared on Node { child { b } }
+    """
+
+    for location <- [nil, %Absinthe.Blueprint.SourceLocation{line: 1, column: 1}] do
+      {data, payloads} = execute(query, with_locations(options, location))
+
+      assert Map.has_key?(completion(payloads, "fails"), :errors)
+      assert data == %{"node" => %{"a" => "a", "child" => %{"b" => "b"}}}
+      assert_once(["node", "child"])
+    end
+  end
+
+  test "location-free fragment reuse preserves directive identity for every streamed item", %{
+    options: options
+  } do
+    query = """
+    { node { nodes @stream(initialCount: 1) { ...Outer ...Outer } } }
+    fragment Outer on Node { ...Shared @defer(label: "item") }
+    fragment Shared on Node { a b }
+    """
+
+    {data, payloads} = execute(query, with_locations(options, nil))
+
+    assert data == %{
+             "node" => %{"nodes" => [%{"a" => "a", "b" => "b"}, %{"a" => "a", "b" => "b"}]}
+           }
+
+    item_paths =
+      for payload <- payloads,
+          notice <- Map.get(payload, :pending, []),
+          notice[:label] == "item",
+          do: notice.path
+
+    assert item_paths == [["node", "nodes", 0], ["node", "nodes", 1]]
+
+    for index <- [0, 1], name <- ["a", "b"], do: assert_once(["node", "nodes", index, name])
+  end
+
   test "child groups of an otherwise empty parent are released without a parent notice", %{
     options: options
   } do
@@ -342,5 +402,15 @@ defmodule Absinthe.Integration.Execution.IncrementalConformanceTest do
   defp assert_once(path) do
     assert_received {:conformance_resolved, ^path}
     refute_received {:conformance_resolved, ^path}
+  end
+
+  defp with_locations(options, location) do
+    Keyword.put(options, :pipeline_modifier, fn pipeline, _ ->
+      Absinthe.Pipeline.insert_before(
+        pipeline,
+        Absinthe.Incremental.Start,
+        {ReplaceLocations, location: location}
+      )
+    end)
   end
 end

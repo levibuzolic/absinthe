@@ -140,7 +140,12 @@ defmodule Absinthe.Incremental.Planner do
        ) do
     fragment = Map.fetch!(res.fragments, name)
     directive = Directives.active(spread, :defer)
-    token = if directive, do: elem(directive, 0), else: usage_token(usage, acc.state)
+
+    token =
+      if directive,
+        do: directive_token(elem(directive, 0), res),
+        else: usage_token(usage, acc.state)
+
     visited = Map.get(acc.visited, name, MapSet.new())
 
     if applies?(fragment.type_condition, type, res.schema) and
@@ -154,7 +159,14 @@ defmodule Absinthe.Incremental.Planner do
   end
 
   defp usage_token(nil, _), do: nil
-  defp usage_token(usage, state), do: state.groups[usage].directive
+  defp usage_token(usage, state), do: state.groups[usage].directive_id
+
+  # Ordinary subscription execution does not run Start; an applicable active
+  # directive is rejected below before any deferred usage can be created.
+  defp directive_token(_, %{incremental_subscription: true}), do: :subscription
+
+  defp directive_token(directive, _),
+    do: Keyword.fetch!(directive.__private__, :__absinthe_incremental_id)
 
   defp defer(fragment, parent, path, res, acc) do
     case Directives.active(fragment, :defer) do
@@ -173,7 +185,7 @@ defmodule Absinthe.Incremental.Planner do
               kind: :defer,
               parent: parent,
               path: State.path(path),
-              directive: directive
+              directive_id: directive_token(directive, res)
             })
           )
 
