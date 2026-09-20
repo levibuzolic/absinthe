@@ -19,6 +19,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   alias Absinthe.{Blueprint, Type, Phase}
   alias Blueprint.{Result, Execution}
+  alias Absinthe.Incremental.{Directives, Planner}
   import Absinthe.Resolution, only: [put_execution_state: 2]
 
   alias Absinthe.Phase
@@ -75,7 +76,17 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     exec = plugins |> run_callbacks(:before_resolution, exec, run_callbacks?)
 
     common =
-      Map.take(exec, [:adapter, :context, :acc, :root_value, :schema, :fragments, :fields_cache])
+      Map.take(exec, [
+        :adapter,
+        :context,
+        :acc,
+        :root_value,
+        :schema,
+        :fragments,
+        :fields_cache,
+        :incremental,
+        :incremental_subscription
+      ])
 
     res =
       %Absinthe.Resolution{
@@ -98,12 +109,24 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   # First run: expand the operation into the result tree. Suspended fields
   # leave placeholders in the tree and are collected into the pending pool.
   defp do_perform_resolution(
+         %{result: nil, incremental: %{frame: frame}} = exec,
+         _operation,
+         res,
+         _options
+       )
+       when not is_nil(frame) do
+    {result, res} = resolve_frame(frame, res)
+    exec = put_execution_state(exec, res)
+    %{exec | result: result, pending: Enum.reverse(res.pending)}
+  end
+
+  defp do_perform_resolution(
          %{result: %{fields: nil}} = exec,
          %{type: :mutation} = op,
          res,
          options
        ) do
-    {fields, res} = project_fields(op, op.schema_node, [op], res)
+    {:ok, fields, res} = project_fields(op, op.schema_node, exec.root_value, [op], res)
 
     exec = %{
       exec
@@ -140,6 +163,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   # Roots remain serial across every suspension in their eager subtree.
+  # Deferred children are queued separately and do not block the next root.
   # Completed roots are accumulated in reverse order until the operation ends.
   defp resolve_mutation_fields(%{mutation: %{fields: [field | fields]}} = exec, op, res) do
     {value, res} = maybe_fast_resolve(field, res, exec.root_value, op.schema_node, [field, op])
@@ -273,8 +297,26 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   def walk_result(%{fields: nil} = result, bp_node, _schema_type, res, path) do
     pending = res.pending
 
-    {fields, res} = resolve_fields(bp_node, res, result.root_value, path)
-    complete_container(%{result | fields: fields}, res, pending)
+    case resolve_fields(bp_node, res, result.root_value, path) do
+      {:ok, fields, res} ->
+        complete_container(%{result | fields: fields}, res, pending)
+
+      {:error, directive} ->
+        error =
+          error(
+            directive,
+            "The @defer directive is not supported on subscription operations.",
+            path,
+            %{}
+          )
+
+        {%Result.Leaf{
+           emitter: result.emitter,
+           value: nil,
+           extensions: result.extensions,
+           errors: [error]
+         }, res}
+    end
   end
 
   def walk_result(
@@ -320,16 +362,23 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     |> get_concrete_type(source, res)
     |> case do
       nil ->
-        {[], res}
+        {:ok, [], res}
 
       parent_type ->
-        {fields, res} = project_fields(parent, parent_type, path, res)
-        {values, res} = do_resolve_fields(fields, res, source, parent_type, path, [])
-        {values, %{res | path: path}}
+        with {:ok, fields, res} <- project_fields(parent, parent_type, source, path, res) do
+          {values, res} = do_resolve_fields(fields, res, source, parent_type, path, [])
+          {:ok, values, %{res | path: path}}
+        end
     end
   end
 
-  defp project_fields(parent, parent_type, path, res) do
+  defp project_fields(
+         parent,
+         parent_type,
+         _source,
+         path,
+         %{incremental: nil, incremental_subscription: false} = res
+       ) do
     {fields, cache} =
       Absinthe.Resolution.Projector.project(
         parent.selections,
@@ -339,7 +388,34 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         res
       )
 
-    {fields, %{res | fields_cache: cache}}
+    {:ok, fields, %{res | fields_cache: cache}}
+  end
+
+  defp project_fields(parent, parent_type, source, path, res) do
+    Planner.project(parent, parent_type, source, path, res)
+  end
+
+  defp resolve_frame(%{kind: :defer} = frame, res) do
+    pending = res.pending
+    res = %{res | delivery: frame.groups}
+
+    {fields, res} =
+      do_resolve_fields(frame.fields, res, frame.source, frame.parent_type, frame.path, [])
+
+    result = %Result.Object{root_value: frame.source, emitter: frame.emitter, fields: fields}
+    complete_container(result, res, pending)
+  end
+
+  defp resolve_frame(%{kind: :stream, values: [value | _]} = frame, res) do
+    path = [frame.index | frame.path]
+    res = Map.merge(res, frame.field_context)
+    res = %{res | delivery: MapSet.new(), path: path}
+    emitter = frame.emitter
+    emitter = put_in(emitter.schema_node.type, frame.item_type)
+
+    value
+    |> to_result(emitter, frame.item_type, res.extensions)
+    |> walk_result(emitter, frame.item_type, res, path)
   end
 
   defp get_return_type(%{schema_node: %Type.Field{type: type}}) do
@@ -394,8 +470,11 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     {emitter, res} = prepared_emitter(res, field, parent_type, path)
     full_type = emitter.schema_node.type
 
-    case Type.unwrap(full_type) do
-      %struct{} when struct in [Type.Union, Type.Interface] ->
+    case {Directives.active(field, :stream), Type.unwrap(full_type)} do
+      {{_, _}, _} ->
+        resolve_field(field, res, source, parent_type, path)
+
+      {_, %struct{}} when struct in [Type.Union, Type.Interface] ->
         resolve_field(field, res, source, parent_type, path)
 
       _ ->
@@ -508,10 +587,34 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         _ -> nil
       end
 
+    {value, res, stream_errors} = Planner.prepare_stream(value, bp_field, res)
+    errors = errors ++ stream_errors
+
     value
     |> to_result(bp_field, full_type, extensions)
     |> add_errors(Enum.reverse(errors), &put_result_error_value(&1, &2, bp_field, source, path))
     |> walk_result(bp_field, full_type, res, path)
+  end
+
+  defp prepared_emitter(
+         %{incremental: %{}, fields_cache: cache} = res,
+         bp_field,
+         parent_type,
+         path
+       ) do
+    key = {:emitter_type, Absinthe.Resolution.Projector.cache_key(path, parent_type.identifier)}
+
+    {full_type, res} =
+      case Map.fetch(cache, key) do
+        {:ok, full_type} ->
+          {full_type, res}
+
+        :error ->
+          full_type = Type.expand(bp_field.schema_node.type, res.schema)
+          {full_type, %{res | fields_cache: Map.put(cache, key, full_type)}}
+      end
+
+    {put_in(bp_field.schema_node.type, full_type), res}
   end
 
   defp prepared_emitter(%{fields_cache: cache} = res, bp_field, parent_type, path) do

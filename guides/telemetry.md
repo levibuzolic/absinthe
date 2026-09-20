@@ -31,6 +31,9 @@ you need to know how long the underlying operation took, you'll need to hook
 telemetry up to that underlying operation. See, for example, the recommended
 telemetry events in the documentation for `Ecto.Repo`.
 
+For incremental delivery, see the [incremental delivery guide](incremental-delivery.md)
+for how operation and field events are timed across lazy continuation pulls.
+
 ## Interactive Telemetry
 
 As an example, you could attach a handler in an `iex -S mix` shell. Paste in:

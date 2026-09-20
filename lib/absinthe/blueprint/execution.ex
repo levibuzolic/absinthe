@@ -44,7 +44,9 @@ defmodule Absinthe.Blueprint.Execution do
     root_value: %{},
     pending: [],
     resolved: %{},
-    mutation: nil
+    mutation: nil,
+    incremental: nil,
+    incremental_subscription: false
   ]
 
   @type t :: %__MODULE__{
@@ -53,6 +55,8 @@ defmodule Absinthe.Blueprint.Execution do
           acc: acc,
           pending: [{reference, Absinthe.Resolution.t()}],
           mutation: nil | %{fields: [Absinthe.Blueprint.Document.Field.t()], options: keyword},
+          incremental: nil | Absinthe.Incremental.State.t(),
+          incremental_subscription: boolean,
           resolved: %{optional(reference) => node_t}
         }
 
@@ -61,6 +65,11 @@ defmodule Absinthe.Blueprint.Execution do
           | Result.List
           | Result.Leaf
           | Result.Pending
+
+  def get(%{execution: %{incremental: %{frame: frame}} = exec}, _operation)
+      when not is_nil(frame) do
+    exec
+  end
 
   def get(%{execution: %{result: nil} = exec} = bp_root, operation) do
     result = %Result.Object{
@@ -73,6 +82,9 @@ defmodule Absinthe.Blueprint.Execution do
       | result: result,
         adapter: bp_root.adapter,
         schema: bp_root.schema,
+        incremental_subscription:
+          operation.type == :subscription and
+            Absinthe.Incremental.Directives.enabled?(bp_root.schema),
         fragments: Map.new(bp_root.fragments, &{&1.name, &1})
     }
   end
