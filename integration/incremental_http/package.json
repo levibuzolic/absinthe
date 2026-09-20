@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "client:patch": "patch-package --error-on-fail",
     "format:check": "prettier --check '*.mjs' package.json relay.config.json 'relay/*.js'",
     "test": "node --test --test-concurrency=1 --test-timeout=30000 client.test.mjs relay.test.mjs multipart.test.mjs",
     "relay:compile": "relay-compiler --noWatchman"
@@ -14,13 +13,11 @@
   "dependencies": {
     "@apollo/client": "4.3.1",
     "graphql": "16.12.0",
-    "meros": "1.3.2",
     "relay-runtime": "21.0.1",
     "rxjs": "7.8.2"
   },
   "devDependencies": {
     "graphql-reference": "npm:graphql@17.0.0-alpha.9",
-    "patch-package": "8.0.1",
     "prettier": "3.8.1",
     "relay-compiler": "21.0.1"
   }
