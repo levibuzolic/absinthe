@@ -86,6 +86,27 @@ defmodule Absinthe.Resolution do
     delivery: MapSet.new()
   ]
 
+  # Shared execution state is carried forward between fields and list items;
+  # it must never be retained in a queued field's local completion context.
+  @execution_fields [:acc, :context, :fields_cache, :pending, :incremental]
+
+  @doc false
+  @spec put_execution_state(t() | Absinthe.Blueprint.Execution.t(), t()) ::
+          t() | Absinthe.Blueprint.Execution.t()
+  def put_execution_state(%__MODULE__{} = resolution, resolution), do: resolution
+
+  def put_execution_state(target, %__MODULE__{} = source) do
+    Map.merge(target, Map.take(source, @execution_fields))
+  end
+
+  @doc false
+  @spec field_context(t()) :: map()
+  def field_context(%__MODULE__{} = resolution) do
+    resolution
+    |> Map.from_struct()
+    |> Map.drop(@execution_fields ++ [:path, :delivery, :incremental_subscription])
+  end
+
   def resolver_spec(fun) do
     {{__MODULE__, :call}, fun}
   end

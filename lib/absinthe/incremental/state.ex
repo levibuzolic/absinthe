@@ -29,21 +29,32 @@ defmodule Absinthe.Incremental.State do
   Deferred fields or streamed values awaiting execution. Enqueue assigns
   `job_id`; taking the work assigns its execution frame `ref`.
   """
-  @type work :: %{
-          required(:kind) => :defer | :stream,
-          required(:groups) => MapSet.t(group_ref()),
-          required(:emitter) => emitter(),
-          required(:path) => [emitter() | non_neg_integer()],
-          optional(:job_id) => non_neg_integer(),
-          optional(:ref) => non_neg_integer(),
-          optional(:source) => term(),
-          optional(:fields) => [Blueprint.Document.Field.t()],
-          optional(:parent_type) => Type.Object.t(),
-          optional(:values) => nonempty_list(term()),
-          optional(:index) => non_neg_integer(),
-          optional(:item_type) => Type.reference_t(),
-          optional(:field_context) => map()
-        }
+  @type work :: defer_work() | stream_work()
+
+  @typep defer_work :: %{
+           required(:kind) => :defer,
+           required(:groups) => MapSet.t(group_ref()),
+           required(:emitter) => emitter(),
+           required(:path) => [emitter() | non_neg_integer()],
+           required(:source) => term(),
+           required(:fields) => [Blueprint.Document.Field.t()],
+           required(:parent_type) => Type.Object.t(),
+           optional(:job_id) => non_neg_integer(),
+           optional(:ref) => non_neg_integer()
+         }
+
+  @typep stream_work :: %{
+           required(:kind) => :stream,
+           required(:groups) => MapSet.t(group_ref()),
+           required(:emitter) => emitter(),
+           required(:path) => [emitter() | non_neg_integer()],
+           required(:values) => nonempty_list(term()),
+           required(:index) => non_neg_integer(),
+           required(:item_type) => Type.reference_t(),
+           required(:field_context) => map(),
+           optional(:job_id) => non_neg_integer(),
+           optional(:ref) => non_neg_integer()
+         }
 
   @typep buffered_frame :: %{
            required(:ref) => non_neg_integer(),
