@@ -247,6 +247,14 @@ The eager `Absinthe.run/3` API remains available for clients and transports that
 accept only ordinary GraphQL responses. Do not pass an `Absinthe.Incremental`
 struct to a JSON encoder as if it were a response map.
 
+The repository includes a client-over-HTTP test harness in
+`integration/incremental_http`, using Apollo Client's `GraphQL17Alpha9Handler`,
+Relay's compiler and runtime, and a test-only local multipart adapter. Run it with
+`integration/incremental_http/run`. Its README records pinned versions,
+verified cases, and client limitations. It characterizes two stock Apollo 4.3.1
+limitations for nested streams and cancellation; it does not add production
+incremental support to Absinthe Plug.
+
 ## Select a client format
 
 One schema can serve both clients. Select the response format for each request.
@@ -260,7 +268,8 @@ above; its supported Apollo protocol is `GraphQL17Alpha9Handler` / `incrementalS
 
 Both formats use the same directive validation, field collection and execution.
 The default format follows the proposal's response contract. Relay's format is
-an explicit compatibility encoding.
+an explicit compatibility encoding. The HTTP tests keep requests for both clients
+open against the same endpoint and verify independent format selection and demand.
 
 For Apollo, configure the matching handler:
 
@@ -282,8 +291,10 @@ same older wire format (`deferSpec=20220824`), which is not supported. See
 [Apollo's handler documentation](https://www.apollographql.com/docs/react/data/defer)
 and [incremental v0.2](https://specs.apollo.dev/incremental/v0.2/).
 Apollo 4.3.1 loses items when a stream is introduced directly inside a streamed
-item, and HttpLink cancellation can produce an unhandled `AbortError`.
-Introducing the inner stream through an explicit defer is supported.
+item, and HttpLink cancellation can produce an unhandled `AbortError`. The
+harness records these client failures without patches and verifies the nested
+wire data against GraphQL.js. Introducing the inner stream through an explicit
+defer is supported. Relay's client tests cover successful request cancellation.
 
 ## Relay compatibility
 
@@ -340,7 +351,8 @@ Two compatibility behaviors differ from the default draft format:
   indices, and the final response replays accumulated root data with
   `is_final: true`. This also preserves errors that caused nullable items to
   become null. Relay's development build can warn that this final replay used
-  non-streaming mode.
+  non-streaming mode. The HTTP tests verify that behavior and the resulting
+  cache contents.
 
 The formatter retains delivered data until completion, and deferred snapshots
 can repeat fields already sent. That memory and wire cost is specific to Relay
@@ -348,9 +360,14 @@ compatibility. Its compiler rejects `@stream` on scalar lists; use linked-object
 lists or connections. Relay's optional `use_customized_batch` compiler extension
 is not part of the supported draft directives and must remain disabled.
 
-Production transports must explicitly negotiate and select
-`incremental_format: :relay`; the core option does not configure Absinthe Plug
-or a client network layer.
+The HTTP harness uses `incrementalSpec=relay` as an application-defined
+negotiation parameter, not a standardized GraphQL HTTP protocol. Production
+transports must explicitly negotiate and select `incremental_format: :relay`;
+the core option does not configure Absinthe Plug or a client network layer.
+The harness runs unmodified Relay 21.0.1 with a small local parser for JSON
+multipart parts, boundaries, UTF-8 chunks, truncation, and cancellation. The
+parser is specific to this harness and is not a general MIME parser. Its
+deterministic parser regressions are separate from the HTTP tests.
 
 ## Draft interpretation
 
