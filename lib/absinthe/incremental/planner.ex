@@ -92,25 +92,7 @@ defmodule Absinthe.Incremental.Planner do
                 | field_details: Enum.map(field.field_details, fn {node, _} -> {node, nil} end)
               },
               item_type: item_type,
-              # Abstract-type callbacks receive the originating field resolution.
-              # Keep its local metadata, never a stale execution/scheduler snapshot.
-              field_context:
-                Map.take(res, [
-                  :value,
-                  :adapter,
-                  :parent_type,
-                  :root_value,
-                  :definition,
-                  :schema,
-                  :source,
-                  :errors,
-                  :middleware,
-                  :arguments,
-                  :extensions,
-                  :private,
-                  :state,
-                  :fragments
-                ])
+              field_context: Absinthe.Resolution.field_context(res)
             })
 
           {prefix, %{res | incremental: state}, []}

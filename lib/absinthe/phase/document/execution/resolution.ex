@@ -20,6 +20,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   alias Absinthe.{Blueprint, Type, Phase}
   alias Blueprint.{Result, Execution}
   alias Absinthe.Incremental.{Directives, Planner}
+  import Absinthe.Resolution, only: [put_execution_state: 2]
 
   alias Absinthe.Phase
   use Absinthe.Phase
@@ -115,7 +116,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
        )
        when not is_nil(frame) do
     {result, res} = resolve_frame(frame, res)
-    exec = update_persisted_fields(exec, res)
+    exec = put_execution_state(exec, res)
     %{exec | result: result, pending: Enum.reverse(res.pending)}
   end
 
@@ -144,7 +145,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     {result, res} =
       walk_result(exec.result, operation, operation.schema_node, res, [operation])
 
-    exec = update_persisted_fields(exec, res)
+    exec = put_execution_state(exec, res)
 
     %{exec | result: result, pending: Enum.reverse(res.pending)}
   end
@@ -156,7 +157,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
     {pool, resolved, res} =
       Enum.reduce(exec.pending, {[], exec.resolved, res}, &resolve_pending/2)
 
-    exec = update_persisted_fields(exec, res)
+    exec = put_execution_state(exec, res)
 
     %{exec | pending: Enum.reverse(pool, Enum.reverse(res.pending)), resolved: resolved}
   end
@@ -171,11 +172,11 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
     cond do
       res.pending != [] ->
-        exec = update_persisted_fields(exec, res)
+        exec = put_execution_state(exec, res)
         %{exec | pending: Enum.reverse(res.pending)}
 
       non_null_violation?(value) ->
-        exec = update_persisted_fields(exec, res)
+        exec = put_execution_state(exec, res)
         %{exec | result: do_propagate_null_trimming(result), mutation: nil}
 
       true ->
@@ -184,7 +185,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   end
 
   defp resolve_mutation_fields(%{mutation: %{fields: []}} = exec, _op, res),
-    do: update_persisted_fields(exec, res)
+    do: put_execution_state(exec, res)
 
   defp finish_mutation(%{mutation: nil} = exec), do: exec
   defp finish_mutation(%{pending: [_ | _]} = exec), do: exec
@@ -202,7 +203,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
   defp finish_mutation(exec), do: exec
 
   defp resolve_pending({ref, old_res}, {pool, resolved, res}) do
-    res = update_persisted_fields(old_res, res)
+    res = put_execution_state(old_res, res)
 
     res
     |> reduce_resolution
@@ -213,7 +214,7 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
       %{state: :suspended} = suspended_res ->
         pool = [{ref, %{suspended_res | pending: []}} | pool]
-        {pool, resolved, update_persisted_fields(res, suspended_res)}
+        {pool, resolved, put_execution_state(res, suspended_res)}
 
       final_res ->
         raise """
@@ -342,10 +343,11 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   # walk list results
   defp walk_results([value | values], bp_node, inner_type, res, [i | sub_path] = path, acc) do
-    {result, item_res} = walk_result(value, bp_node, inner_type, %{res | path: path}, path)
+    res = %{res | path: path}
+    {result, item_res} = walk_result(value, bp_node, inner_type, res, path)
     # Children may change field-local metadata. The next item still belongs to
     # this list field, while context, accumulator, and suspended work carry on.
-    res = update_persisted_fields(res, item_res)
+    res = put_execution_state(res, item_res)
     walk_results(values, bp_node, inner_type, res, [i + 1 | sub_path], [result | acc])
   end
 
@@ -514,23 +516,6 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
         Ended with: #{inspect(final_res)}
         """
     end
-  end
-
-  defp update_persisted_fields(dest, %{
-         acc: acc,
-         context: context,
-         fields_cache: cache,
-         pending: pending,
-         incremental: incremental
-       }) do
-    %{
-      dest
-      | acc: acc,
-        context: context,
-        fields_cache: cache,
-        pending: pending,
-        incremental: incremental
-    }
   end
 
   defp build_resolution_struct(
