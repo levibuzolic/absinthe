@@ -123,6 +123,7 @@ defmodule Absinthe.Mixfile do
       "guides/introspection.md",
       "guides/telemetry.md",
       "guides/directives.md",
+      "guides/incremental-delivery.md",
       "guides/adapters.md",
       "guides/complexity-analysis.md",
       "guides/file-uploads.md",

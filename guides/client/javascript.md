@@ -8,6 +8,7 @@ JavaScript frameworks. You can see the guides here:
 
 - [Apollo Client](apollo.md)
 - [Relay](relay.md)
+- [Incremental delivery](../incremental-delivery.md)
 
 ## Over HTTP
 
