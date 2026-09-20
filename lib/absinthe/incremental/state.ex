@@ -42,7 +42,7 @@ defmodule Absinthe.Incremental.State do
           optional(:values) => nonempty_list(term()),
           optional(:index) => non_neg_integer(),
           optional(:item_type) => Type.reference_t(),
-          optional(:extensions) => map()
+          optional(:field_context) => map()
         }
 
   @typep buffered_frame :: %{

@@ -342,14 +342,15 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   # walk list results
   defp walk_results([value | values], bp_node, inner_type, res, [i | sub_path] = path, acc) do
-    {result, res} = walk_result(value, bp_node, inner_type, %{res | path: path}, path)
+    {result, item_res} = walk_result(value, bp_node, inner_type, %{res | path: path}, path)
+    # Children may change field-local metadata. The next item still belongs to
+    # this list field, while context, accumulator, and suspended work carry on.
+    res = update_persisted_fields(res, item_res)
     walk_results(values, bp_node, inner_type, res, [i + 1 | sub_path], [result | acc])
   end
 
-  defp walk_results([], _, _, res = %{path: [_ | sub_path]}, _, acc),
+  defp walk_results([], _, _, res, [_ | sub_path], acc),
     do: {:lists.reverse(acc), %{res | path: sub_path}}
-
-  defp walk_results([], _, _, res, _, acc), do: {:lists.reverse(acc), res}
 
   defp resolve_fields(parent, res, source, path) do
     # parent is the parent field, we need to get the return type of that field
@@ -405,12 +406,13 @@ defmodule Absinthe.Phase.Document.Execution.Resolution do
 
   defp resolve_frame(%{kind: :stream, values: [value | _]} = frame, res) do
     path = [frame.index | frame.path]
+    res = Map.merge(res, frame.field_context)
     res = %{res | delivery: MapSet.new(), path: path}
     emitter = frame.emitter
     emitter = put_in(emitter.schema_node.type, frame.item_type)
 
     value
-    |> to_result(emitter, frame.item_type, frame.extensions)
+    |> to_result(emitter, frame.item_type, res.extensions)
     |> walk_result(emitter, frame.item_type, res, path)
   end
 
