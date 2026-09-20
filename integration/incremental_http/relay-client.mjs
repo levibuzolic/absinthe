@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import Relay from "relay-runtime";
-import { meros } from "meros/browser";
+import { readMultipart } from "./multipart.mjs";
 import { waitFor } from "./server.mjs";
 
 const {
@@ -58,8 +58,9 @@ export function observeRelay(
             signal: controller.signal,
           });
           assert.equal(response.status, 200);
-          const parts = await meros(response);
-          const isMultipart = Symbol.asyncIterator in parts;
+          const isMultipart = /^multipart\/mixed\b/i.test(
+            response.headers.get("content-type") ?? "",
+          );
           const emit = (payload) => {
             raw.push(structuredClone(payload));
             sink.next(
@@ -73,10 +74,7 @@ export function observeRelay(
             events.emit("change");
           };
           if (isMultipart) {
-            for await (const part of parts) {
-              assert.equal(part.json, true);
-              emit(part.body);
-            }
+            for await (const payload of readMultipart(response)) emit(payload);
             const terminal = raw.at(-1);
             if (
               terminal?.hasNext !== false ||
@@ -86,7 +84,7 @@ export function observeRelay(
                 "Relay response ended before its terminal payload",
               );
             }
-          } else emit(await parts.json());
+          } else emit(await response.json());
           sink.complete();
         })().catch((reason) => {
           if (!controller.signal.aborted) sink.error(reason);

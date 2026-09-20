@@ -251,10 +251,9 @@ The repository includes a client-over-HTTP test harness in
 `integration/incremental_http`, using Apollo Client's `GraphQL17Alpha9Handler`,
 Relay's compiler and runtime, and a test-only local multipart adapter. Run it with
 `integration/incremental_http/run`. Its README records pinned versions,
-verified cases, and client limitations. The harness explicitly applies two
-unreleased Apollo 4.3.1 fixes for nested streams and cancellation; stock Apollo
-still fails those regressions. It does not add production incremental support
-to Absinthe Plug.
+verified cases, and client limitations. It characterizes two stock Apollo 4.3.1
+limitations for nested streams and cancellation; it does not add production
+incremental support to Absinthe Plug.
 
 ## Select a client format
 
@@ -291,8 +290,11 @@ Apollo's `Defer20220824Handler` and `GraphQL17Alpha2Handler` are aliases for the
 same older wire format (`deferSpec=20220824`), which is not supported. See
 [Apollo's handler documentation](https://www.apollographql.com/docs/react/data/defer)
 and [incremental v0.2](https://specs.apollo.dev/incremental/v0.2/).
-The two Apollo client fixes described above remain necessary for nested streams
-and clean cancellation in version 4.3.1.
+Apollo 4.3.1 loses items when a stream is introduced directly inside a streamed
+item, and HttpLink cancellation can produce an unhandled `AbortError`. The
+harness records these client failures without patches and verifies the nested
+wire data against GraphQL.js. Introducing the inner stream through an explicit
+defer is supported. Relay's client tests cover successful request cancellation.
 
 ## Relay compatibility
 
@@ -362,11 +364,10 @@ The HTTP harness uses `incrementalSpec=relay` as an application-defined
 negotiation parameter, not a standardized GraphQL HTTP protocol. Production
 transports must explicitly negotiate and select `incremental_format: :relay`;
 the core option does not configure Absinthe Plug or a client network layer.
-The harness runs unmodified Relay 21.0.1 with an explicitly patched meros 1.3.2
-browser parser. Its `integration/incremental_http/README.md` documents
-the runtime patch and its source revision.
-Stock meros can skip boundaries spanning Fetch chunks; deterministic parser
-regressions cover that defect separately from the HTTP tests.
+The harness runs unmodified Relay 21.0.1 with a small local parser for JSON
+multipart parts, boundaries, UTF-8 chunks, truncation, and cancellation. The
+parser is specific to this harness and is not a general MIME parser. Its
+deterministic parser regressions are separate from the HTTP tests.
 
 ## Draft interpretation
 

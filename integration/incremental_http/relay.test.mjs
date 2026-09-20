@@ -145,10 +145,7 @@ test("Relay and Apollo negotiate independent formats on the same endpoint", asyn
 
 test("Relay rejects a truncated response before deferred work completes", async (t) => {
   const client = observeRelay(server, t, DeferQuery, { truncate: true });
-  await assert.rejects(
-    client.finish(),
-    /Relay response ended before its terminal payload/,
-  );
+  await assert.rejects(client.finish(), /Premature end of multipart body/);
   assert.equal(client.read().data.hero.id, "1");
   assert.equal(
     client.fragment(Details, client.read().data.hero).isMissingData,
