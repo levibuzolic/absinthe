@@ -12,6 +12,7 @@ import { data, observe as observeApollo } from "./client.mjs";
 import { startServer } from "./server.mjs";
 
 import AbstractQuery from "./relay/__generated__/RelayCasesAbstractQuery.graphql.js";
+import AbstractStreamQuery from "./relay/__generated__/RelayCasesAbstractStreamQuery.graphql.js";
 import AncestorPathQuery from "./relay/__generated__/RelayCasesAncestorPathQuery.graphql.js";
 import AncestorQuery from "./relay/__generated__/RelayCasesAncestorQuery.graphql.js";
 import ConnectionQuery from "./relay/__generated__/RelayConnectionQuery.graphql.js";
@@ -77,6 +78,22 @@ test("Relay compiled defer reconstructs a named fragment", async (t) => {
       is_final: !payload.hasNext,
     });
   }
+});
+
+test("Relay streams abstract items whose type depends on field arguments", async (t) => {
+  const client = observeRelay(server, t, AbstractStreamQuery);
+  assert.deepEqual(data(await client.initial()), {
+    people: [{ id: "1", name: "Ada" }],
+  });
+  const final = await client.finish();
+  assert.equal(final.isMissingData, false);
+  assert.deepEqual(data(final), {
+    people: [
+      { id: "1", name: "Ada" },
+      { id: "2", name: "Grace" },
+      { id: "3", name: "Edsger" },
+    ],
+  });
 });
 
 test("Relay and Apollo negotiate independent formats on the same endpoint", async (t) => {

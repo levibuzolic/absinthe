@@ -61,6 +61,26 @@ test("Apollo writes deferred data and streamed items into its normalized cache",
   assert.deepEqual(data(operation.cached()), data(final));
 });
 
+test("Apollo streams abstract items whose type depends on field arguments", async (t) => {
+  const operation = observe(
+    t,
+    "{ people: namedPeople(person: true) @stream(initialCount: 1) { ... on Person { id name } } }",
+    { fetchPolicy: "network-only" },
+  );
+  assert.deepEqual(data(await operation.initial()), {
+    people: [{ id: "1", name: "Ada" }],
+  });
+  const expected = {
+    people: [
+      { id: "1", name: "Ada" },
+      { id: "2", name: "Grace" },
+      { id: "3", name: "Edsger" },
+    ],
+  };
+  assert.deepEqual(data(await operation.finish()), expected);
+  assert.deepEqual(data(operation.cached()), expected);
+});
+
 test("Apollo preserves explicit null labels on initial and nested pending notices", async (t) => {
   const operation = observe(
     t,

@@ -1,5 +1,17 @@
 import { graphql } from "relay-runtime";
 
+export const abstractStream = graphql`
+  query RelayCasesAbstractStreamQuery {
+    people: namedPeople(person: true)
+      @stream(initialCount: 1, label: "people") {
+      ... on Person {
+        id
+        name
+      }
+    }
+  }
+`;
+
 export const stream = graphql`
   query RelayCasesStreamQuery($initial: Int!, $enabled: Boolean!) {
     roster: people

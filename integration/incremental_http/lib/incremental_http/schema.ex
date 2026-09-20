@@ -82,8 +82,14 @@ defmodule IncrementalHTTP.Schema do
     resolve_type fn _, _ -> :person end
   end
 
+  interface :named do
+    field :name, :string
+    resolve_type fn _, resolution -> if resolution.arguments[:person], do: :person end
+  end
+
   object :person do
     interface :node
+    interface :named
     field :id, non_null(:id), resolve: &__MODULE__.trace/3
 
     field :delayed_id, non_null(:id) do
@@ -167,6 +173,11 @@ defmodule IncrementalHTTP.Schema do
   query do
     field :node, :node, resolve: &__MODULE__.trace/3
 
+    field :named_people, list_of(:named) do
+      arg :person, non_null(:boolean)
+      resolve &__MODULE__.trace/3
+    end
+
     field :nullable_people_connection, :person_connection do
       arg :first, non_null(:integer)
       arg :after, :string
@@ -216,6 +227,7 @@ defmodule IncrementalHTTP.Schema do
       second: grace,
       person: ada,
       node: ada,
+      named_people: [ada, grace, edsger],
       people: [ada, grace, edsger],
       nullable_people: [ada, nil, grace],
       required_people: [ada, nil, grace],
