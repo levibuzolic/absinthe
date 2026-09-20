@@ -115,9 +115,11 @@ later work and its telemetry unexecuted.
 
 The list resolver still returns its list once. `@stream` defers completion of
 the remaining items and their fields; it does not turn a database query into a
-cursor or paginate an external data source. Queued work retains the remaining
-source items. Keeping the original response or continuation also keeps its
-initial execution inputs reachable after consumption.
+cursor or paginate an external data source. Queued work retains the original
+list value, the remaining items, and the parent source/private field metadata
+needed while those items are resolved. Keeping the original response or
+continuation also keeps its initial execution inputs reachable after
+consumption.
 
 `Absinthe.run/3` retains its ordinary single-result contract and completes valid
 imported directives eagerly. `run_incremental/3` also returns an ordinary map
@@ -180,7 +182,9 @@ A response field selected eagerly and in a deferred fragment resolves once.
 Its merged child selections can still be deferred. Shared fields in overlapping
 deferred fragments also resolve once. The existing resolver middleware, Async,
 Batch, and Dataloader plugins remain responsible for resolving fields; context
-and accumulator state carry forward between incremental execution steps.
+and accumulator state carry forward between incremental execution steps. For
+interface and union items, `resolve_type/2` callbacks retain the original field
+metadata while receiving the current resolution context.
 Complexity analysis includes deferred and streamed selections before execution.
 
 The execution and result phases selected by a pipeline modifier run for initial
