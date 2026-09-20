@@ -186,6 +186,7 @@ export async function startServer({ reference = false } = {}) {
       );
     try {
       let body = "";
+      request.setEncoding("utf8");
       for await (const chunk of request) body += chunk;
       const operation = JSON.parse(body);
       if (typeof operation.query !== "string")
