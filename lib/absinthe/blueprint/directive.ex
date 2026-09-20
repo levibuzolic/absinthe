@@ -25,7 +25,7 @@ defmodule Absinthe.Blueprint.Directive do
           flags: Blueprint.flags_t(),
           errors: [Phase.Error.t()],
           __reference__: nil,
-          __private__: []
+          __private__: Keyword.t()
         }
 
   @spec expand(t, Blueprint.node_t()) :: {t, map}
