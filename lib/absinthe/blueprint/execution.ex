@@ -43,7 +43,8 @@ defmodule Absinthe.Blueprint.Execution do
     context: %{},
     root_value: %{},
     pending: [],
-    resolved: %{}
+    resolved: %{},
+    mutation: nil
   ]
 
   @type t :: %__MODULE__{
@@ -51,6 +52,7 @@ defmodule Absinthe.Blueprint.Execution do
           result: nil | Result.Object.t(),
           acc: acc,
           pending: [{reference, Absinthe.Resolution.t()}],
+          mutation: nil | %{fields: [Absinthe.Blueprint.Document.Field.t()], options: keyword},
           resolved: %{optional(reference) => node_t}
         }
 
