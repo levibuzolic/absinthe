@@ -80,6 +80,19 @@ defmodule Absinthe.Resolution do
     pending: []
   ]
 
+  # Shared execution state is carried forward between fields and list items;
+  # field-local metadata stays with the originating field.
+  @execution_fields [:acc, :context, :fields_cache, :pending]
+
+  @doc false
+  @spec put_execution_state(t() | Absinthe.Blueprint.Execution.t(), t()) ::
+          t() | Absinthe.Blueprint.Execution.t()
+  def put_execution_state(%__MODULE__{} = resolution, resolution), do: resolution
+
+  def put_execution_state(target, %__MODULE__{} = source) do
+    Map.merge(target, Map.take(source, @execution_fields))
+  end
+
   def resolver_spec(fun) do
     {{__MODULE__, :call}, fun}
   end
