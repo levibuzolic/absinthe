@@ -23,7 +23,7 @@ defmodule Absinthe.Utils.Render do
     |> String.split("\n")
     |> case do
       [string_line] ->
-        concat([~s("), escape_string(string_line), ~s(")])
+        render_quoted_string(string_line)
 
       string_lines ->
         concat(
@@ -37,22 +37,57 @@ defmodule Absinthe.Utils.Render do
     end
   end
 
+  def render_quoted_string(string) do
+    ~s(") <> escape_string(string) <> ~s(")
+  end
+
+  def render_scalar_value(nil), do: "null"
+  def render_scalar_value(value) when is_binary(value), do: render_quoted_string(value)
+
+  def render_scalar_value(value) when is_list(value) do
+    "[" <> Enum.map_join(value, ", ", &render_scalar_value/1) <> "]"
+  end
+
+  def render_scalar_value(value) when is_map(value) and not is_struct(value) do
+    fields =
+      value
+      |> Enum.reduce(%{}, fn {key, value}, fields ->
+        key = scalar_key(key)
+
+        if Map.has_key?(fields, key) do
+          raise ArgumentError, "Duplicate scalar default object key #{inspect(key)}"
+        end
+
+        Map.put(fields, key, value)
+      end)
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map_join(", ", fn {key, value} -> "#{key}: #{render_scalar_value(value)}" end)
+
+    "{" <> fields <> "}"
+  end
+
+  def render_scalar_value(value), do: inspect(value)
+
+  defp scalar_key(key) do
+    if (is_atom(key) or is_binary(key)) and
+         Regex.match?(~r/\A[_A-Za-z][_0-9A-Za-z]*\z/, to_string(key)) do
+      to_string(key)
+    else
+      raise ArgumentError,
+            "Cannot render scalar default object key #{inspect(key)}: expected a GraphQL Name"
+    end
+  end
+
   @escaped_chars [?", ?\\, ?/, ?\b, ?\f, ?\n, ?\r, ?\t]
 
   defp escape_string(string) do
-    escape_string(string, [])
-  end
-
-  defp escape_string(<<char, rest::binary>>, acc) when char in @escaped_chars do
-    escape_string(rest, [acc | escape_char(char)])
-  end
-
-  defp escape_string(<<char::utf8, rest::binary>>, acc) do
-    escape_string(rest, acc ++ [<<char::utf8>>])
-  end
-
-  defp escape_string(<<>>, acc) do
-    to_string(acc)
+    for char <- String.to_charlist(string), into: "" do
+      cond do
+        char in @escaped_chars -> to_string(escape_char(char))
+        char < 0x20 -> "\\u" <> String.pad_leading(Integer.to_string(char, 16), 4, "0")
+        true -> <<char::utf8>>
+      end
+    end
   end
 
   defp escape_char(?"), do: [?\\, ?"]

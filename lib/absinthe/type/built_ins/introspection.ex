@@ -365,8 +365,10 @@ defmodule Absinthe.Type.BuiltIns.Introspection do
       end
   end
 
+  def render_default_value(_schema, _adapter, _type, nil), do: "null"
+
   def render_default_value(schema, adapter, type, value) do
-    case Absinthe.Schema.lookup_type(schema, type, unwrap: false) do
+    case default_value_type(schema, type) do
       %Absinthe.Type.InputObject{fields: fields} ->
         object_values =
           fields
@@ -399,9 +401,19 @@ defmodule Absinthe.Type.BuiltIns.Introspection do
         render_default_value(schema, adapter, type, value)
 
       %Absinthe.Type.Scalar{} = sc ->
-        inspect(Absinthe.Type.Scalar.serialize(sc, value))
+        sc
+        |> Absinthe.Type.Scalar.serialize(value)
+        |> Absinthe.Utils.Render.render_scalar_value()
     end
   end
+
+  defp default_value_type(types, type) when is_map(types) and is_atom(type),
+    do: Map.fetch!(types, type)
+
+  defp default_value_type(types, type) when is_map(types), do: type
+
+  defp default_value_type(schema, type),
+    do: Absinthe.Schema.lookup_type(schema, type, unwrap: false)
 
   defp filter_deprecated(values, show_deprecated) do
     Enum.filter(values, fn %{deprecation: is_deprecated} ->
