@@ -61,7 +61,7 @@ defmodule Absinthe.Resolution.Projector do
         do_collect(selections, fragments, parent_type, schema, index, acc)
 
       %Blueprint.Document.Field{} = field ->
-        field = update_schema_node(field, parent_type)
+        field = concrete_field(field, parent_type)
         key = response_key(field)
 
         acc =
@@ -129,7 +129,7 @@ defmodule Absinthe.Resolution.Projector do
   defp conditionally_collect(condition, selections, fragments, parent_type, schema, index, acc) do
     condition
     |> normalize_condition(schema)
-    |> passes_type_condition?(parent_type)
+    |> applies?(parent_type)
     |> case do
       true -> do_collect(selections, fragments, parent_type, schema, index, acc)
       false -> {acc, index}
@@ -140,14 +140,15 @@ defmodule Absinthe.Resolution.Projector do
   # the concrete parent type on the field here: the projection is cached per
   # parent type, so this happens once per (type, path) instead of copying the
   # field struct again for every element during resolution.
-  defp update_schema_node(%{name: "__" <> _} = field, parent_type) do
+  @doc false
+  def concrete_field(%{name: "__" <> _} = field, parent_type) do
     %{field | parent_type: parent_type}
   end
 
-  defp update_schema_node(
-         %{schema_node: %{identifier: identifier}} = field,
-         %{fields: concrete_fields} = parent_type
-       ) do
+  def concrete_field(
+        %{schema_node: %{identifier: identifier}} = field,
+        %{fields: concrete_fields} = parent_type
+      ) do
     %{field | schema_node: :maps.get(identifier, concrete_fields), parent_type: parent_type}
   end
 
@@ -162,19 +163,20 @@ defmodule Absinthe.Resolution.Projector do
     end
   end
 
-  defp passes_type_condition?(%Type.Object{name: name}, %Type.Object{name: name}) do
+  @doc false
+  def applies?(%Type.Object{name: name}, %Type.Object{name: name}) do
     true
   end
 
-  defp passes_type_condition?(%Type.Interface{} = condition, %Type.Object{} = type) do
+  def applies?(%Type.Interface{} = condition, %Type.Object{} = type) do
     Type.Interface.member?(condition, type)
   end
 
-  defp passes_type_condition?(%Type.Union{} = condition, %Type.Object{} = type) do
+  def applies?(%Type.Union{} = condition, %Type.Object{} = type) do
     Type.Union.member?(condition, type)
   end
 
-  defp passes_type_condition?(_, _) do
+  def applies?(_, _) do
     false
   end
 end
