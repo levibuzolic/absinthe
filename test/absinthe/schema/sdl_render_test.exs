@@ -116,6 +116,267 @@ defmodule Absinthe.Schema.SdlRenderTest do
              SdlTestSchema.sdl()
   end
 
+  defmodule DefaultValuesSchema do
+    use Absinthe.Schema
+    @schema_provider Absinthe.Schema.PersistentTerm
+
+    @string_default "  " <> ~S(#{literal}) <> " \n\t\0  " <> String.duplicate("x", 5_001)
+
+    def string_default, do: @string_default
+
+    import_directives Absinthe.Type.BuiltIns.IncrementalDirectives
+
+    scalar :code do
+      serialize fn value -> "code:#{value}" end
+      parse fn _ -> :error end
+    end
+
+    enum :export_order do
+      value :ascending, as: :asc
+      value :descending, as: :desc
+    end
+
+    input_object :export_options do
+      field :sort_order, :export_order, default_value: :asc
+      field :enabled, :boolean, default_value: false
+      field :codes, list_of(:code), default_value: [:blue, nil]
+    end
+
+    input_object :export_batch do
+      field :options, list_of(:export_options),
+        default_value: [%{sort_order: :asc, codes: [:blue, nil]}, nil]
+    end
+
+    import_sdl """
+    input ImportedExportOptions {
+      enabled: Boolean = false
+    }
+    """
+
+    extend input_object(:imported_export_options) do
+      field :sort_order, :export_order, default_value: :desc
+    end
+
+    query do
+      field :fallback, :string, default_value: "fallback"
+
+      field :export, :string do
+        arg :code, :code, default_value: :blue
+        arg :order, non_null(:export_order), default_value: :asc
+        arg :literal_string, :string, default_value: @string_default
+        arg :batch, :export_batch
+        arg :imported_options, :imported_export_options
+
+        arg :options, :export_options,
+          default_value: %{sort_order: :desc, enabled: false, codes: [:blue, nil]}
+      end
+    end
+  end
+
+  test "macro defaults use their GraphQL types without starting the schema provider" do
+    sdl = Absinthe.Schema.to_sdl(DefaultValuesSchema)
+
+    assert sdl =~
+             "directive @defer(label: String, if: Boolean! = true) on FRAGMENT_SPREAD | INLINE_FRAGMENT"
+
+    assert sdl =~
+             "directive @stream(initialCount: Int! = 0, label: String, if: Boolean! = true) on FIELD"
+
+    assert sdl =~ ~s(code: Code = "code:blue")
+    assert sdl =~ "order: ExportOrder! = ASCENDING"
+
+    assert sdl =~
+             ~s(options: ExportOptions = {codes: ["code:blue", null], enabled: false, sortOrder: DESCENDING})
+
+    assert {:ok, _} = Absinthe.Phase.Parse.run(sdl)
+
+    assert {:ok, ^sdl} =
+             Mix.Tasks.Absinthe.Schema.Sdl.generate_schema(%Mix.Tasks.Absinthe.Schema.Sdl.Options{
+               schema: DefaultValuesSchema
+             })
+  end
+
+  test "renders macro input field defaults alongside SDL defaults without output field defaults" do
+    sdl = Absinthe.Schema.to_sdl(DefaultValuesSchema)
+
+    assert sdl =~ "sortOrder: ExportOrder = ASCENDING"
+    assert sdl =~ "enabled: Boolean = false"
+    assert sdl =~ ~s(codes: [Code] = ["code:blue", null])
+
+    assert sdl =~
+             ~s(options: [ExportOptions] = [{codes: ["code:blue", null], sortOrder: ASCENDING}, null])
+
+    assert sdl =~ """
+           input ImportedExportOptions {
+             enabled: Boolean = false
+             sortOrder: ExportOrder = DESCENDING
+           }
+           """
+
+    assert sdl =~ "fallback: String\n"
+    assert {:ok, _} = Absinthe.Phase.Parse.run(sdl)
+  end
+
+  test "renders long string defaults as parseable GraphQL strings" do
+    sdl = Absinthe.Schema.to_sdl(DefaultValuesSchema)
+
+    assert {:ok, %{input: %Absinthe.Language.Document{definitions: definitions}}} =
+             Absinthe.Phase.Parse.run(sdl)
+
+    default_value =
+      definitions
+      |> Enum.find(&match?(%Absinthe.Language.ObjectTypeDefinition{name: "RootQueryType"}, &1))
+      |> Map.fetch!(:fields)
+      |> Enum.find(&(&1.name == "export"))
+      |> Map.fetch!(:arguments)
+      |> Enum.find(&(&1.name == "literalString"))
+      |> Map.fetch!(:default_value)
+
+    assert %Absinthe.Language.StringValue{value: value} = default_value
+    assert value == DefaultValuesSchema.string_default()
+  end
+
+  defmodule StructuredDefaultsSchema do
+    use Absinthe.Schema
+    use Absinthe.Fixture
+
+    scalar :json, open_ended: true do
+      parse fn value -> {:ok, value} end
+
+      serialize fn
+        :no_value -> nil
+        value -> value
+      end
+    end
+
+    query do
+      field :export, :string do
+        arg :config, :json,
+          default_value: %{
+            enabled_flag: true,
+            nested: %{"raw_key" => "  padded  ", "missing" => nil}
+          }
+
+        arg :codes, :json, default_value: [65, 66]
+        arg :many, :json, default_value: Enum.to_list(1..64)
+        arg :missing, :json, default_value: :no_value
+      end
+    end
+  end
+
+  defmodule InvalidScalarKeySchema do
+    use Absinthe.Schema
+    use Absinthe.Fixture
+    import_types StructuredDefaultsSchema, only: [:json]
+
+    query do
+      field :export, :string do
+        arg :config, :json, default_value: %{"not-a-name" => true}
+      end
+    end
+  end
+
+  test "SDL export reports custom scalar object keys that cannot be GraphQL Names" do
+    sdl = Absinthe.Schema.to_sdl(InvalidScalarKeySchema)
+
+    assert sdl =~ "ArgumentError"
+    assert sdl =~ "Cannot render scalar default object key"
+    assert sdl =~ "not-a-name"
+    assert sdl =~ "expected a GraphQL Name"
+    assert {:error, _} = Absinthe.Phase.Parse.run(sdl)
+  end
+
+  defmodule CollidingScalarKeysSchema do
+    use Absinthe.Schema
+    use Absinthe.Fixture
+    import_types StructuredDefaultsSchema, only: [:json]
+
+    query do
+      field :export, :string do
+        arg :config, :json, default_value: %{"foo" => 2, foo: 1}
+      end
+    end
+  end
+
+  test "SDL export reports distinct scalar object keys that produce the same GraphQL Name" do
+    sdl = Absinthe.Schema.to_sdl(CollidingScalarKeysSchema)
+
+    assert sdl =~ "ArgumentError"
+    assert sdl =~ "Duplicate scalar default object key"
+    assert sdl =~ "foo"
+    assert {:error, _} = Absinthe.Phase.Parse.run(sdl)
+  end
+
+  test "custom scalar defaults render nested objects and serialized null as GraphQL literals" do
+    alias Absinthe.Language
+    defaults = structured_scalar_defaults()
+
+    assert %Language.ObjectValue{fields: fields} = defaults["config"]
+
+    assert %{
+             "enabled_flag" => %Language.BooleanValue{value: true},
+             "nested" => %Language.ObjectValue{fields: nested}
+           } = Map.new(fields, &{&1.name, &1.value})
+
+    assert %{
+             "raw_key" => %Language.StringValue{value: "  padded  "},
+             "missing" => %Language.NullValue{}
+           } = Map.new(nested, &{&1.name, &1.value})
+
+    assert %Language.NullValue{} = defaults["missing"]
+  end
+
+  test "custom scalar list defaults are neither charlists nor truncated inspection output" do
+    alias Absinthe.Language
+    defaults = structured_scalar_defaults()
+
+    assert %Language.ListValue{values: codes} = defaults["codes"]
+    assert Enum.map(codes, & &1.value) == [65, 66]
+    assert %Language.ListValue{values: many} = defaults["many"]
+    assert Enum.map(many, & &1.value) == Enum.to_list(1..64)
+  end
+
+  test "introspection and SDL export preserve the same structured scalar default literals" do
+    if StructuredDefaultsSchema.__absinthe_schema_provider__() == Absinthe.Schema.PersistentTerm do
+      start_supervised!({Absinthe.Schema.Manager, StructuredDefaultsSchema})
+    end
+
+    query = """
+    { __type(name: "RootQueryType") { fields { args { name defaultValue } } } }
+    """
+
+    assert {:ok, %{data: %{"__type" => %{"fields" => [%{"args" => arguments}]}}}} =
+             Absinthe.run(query, StructuredDefaultsSchema)
+
+    assert Enum.sort(Enum.map(arguments, & &1["name"])) == ["codes", "config", "many", "missing"]
+    sdl_defaults = structured_scalar_defaults()
+
+    for %{"name" => name, "defaultValue" => literal} <- arguments do
+      assert {:ok, %{input: %{definitions: [%{fields: [field]}]}}} =
+               Absinthe.Phase.Parse.run("input Defaults { value: Json = #{literal} }")
+
+      assert scalar_literal_value(field.default_value) == scalar_literal_value(sdl_defaults[name])
+    end
+  end
+
+  defp scalar_literal_value(%Absinthe.Language.ObjectValue{fields: fields}),
+    do: Map.new(fields, &{&1.name, scalar_literal_value(&1.value)})
+
+  defp scalar_literal_value(%Absinthe.Language.ListValue{values: values}),
+    do: Enum.map(values, &scalar_literal_value/1)
+
+  defp scalar_literal_value(%Absinthe.Language.NullValue{}), do: nil
+  defp scalar_literal_value(%{value: value}), do: value
+
+  defp structured_scalar_defaults do
+    sdl = Absinthe.Schema.to_sdl(StructuredDefaultsSchema)
+    assert {:ok, %{input: %{definitions: definitions}}} = Absinthe.Phase.Parse.run(sdl)
+
+    query = Enum.find(definitions, &match?(%Absinthe.Language.ObjectTypeDefinition{}, &1))
+    field = Enum.find(query.fields, &(&1.name == "export"))
+    Map.new(field.arguments, &{&1.name, &1.default_value})
+  end
+
   describe "Render SDL" do
     test "for a type" do
       assert_rendered("""
@@ -281,7 +542,7 @@ defmodule Absinthe.Schema.SdlRenderTest do
              type RootQueryType {
                echo(
                  \"The number of times\"
-                 times: Int
+                 times: Int = 10
 
                  timeInterval: Int
                ): String

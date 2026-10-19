@@ -53,6 +53,9 @@ defmodule Absinthe.Resolution do
           acc: %{any => any},
           extensions: %{any => any},
           arguments: arguments,
+          incremental: nil | Absinthe.Incremental.State.t(),
+          incremental_subscription: boolean,
+          delivery: MapSet.t(Absinthe.Incremental.State.group_ref()),
           fragments: [Absinthe.Blueprint.Document.Fragment.Named.t()]
         }
 
@@ -77,8 +80,32 @@ defmodule Absinthe.Resolution do
     fields_cache: %{},
     # Internal to the resolution phase: suspended fields collected during the
     # current pass, as `{ref, %Absinthe.Resolution{}}` in reverse walk order.
-    pending: []
+    pending: [],
+    incremental: nil,
+    incremental_subscription: false,
+    delivery: MapSet.new()
   ]
+
+  # Shared execution state is carried forward between fields and list items;
+  # it must never be retained in a queued field's local completion context.
+  @execution_fields [:acc, :context, :fields_cache, :pending, :incremental]
+
+  @doc false
+  @spec put_execution_state(t() | Absinthe.Blueprint.Execution.t(), t()) ::
+          t() | Absinthe.Blueprint.Execution.t()
+  def put_execution_state(%__MODULE__{} = resolution, resolution), do: resolution
+
+  def put_execution_state(target, %__MODULE__{} = source) do
+    Map.merge(target, Map.take(source, @execution_fields))
+  end
+
+  @doc false
+  @spec field_context(t()) :: map()
+  def field_context(%__MODULE__{} = resolution) do
+    resolution
+    |> Map.from_struct()
+    |> Map.drop(@execution_fields ++ [:path, :delivery, :incremental_subscription])
+  end
 
   def resolver_spec(fun) do
     {{__MODULE__, :call}, fun}

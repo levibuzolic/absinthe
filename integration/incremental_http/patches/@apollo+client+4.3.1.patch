@@ -1,0 +1,130 @@
+diff --git a/node_modules/@apollo/client/incremental/handlers/graphql17Alpha9.js b/node_modules/@apollo/client/incremental/handlers/graphql17Alpha9.js
+--- a/node_modules/@apollo/client/incremental/handlers/graphql17Alpha9.js
++++ b/node_modules/@apollo/client/incremental/handlers/graphql17Alpha9.js
+@@ -90,25 +90,8 @@
+                 }
+                 else {
+                     data = incremental.data;
+-                    // Check if any pending streams added arrays from deferred data so
+-                    // that we can update streamPositions with the initial length of the
+-                    // array to ensure future streamed items are inserted at the right
+-                    // starting index.
+-                    this.pendingMap.forEach((pendingItem) => {
+-                        if (!(pendingItem.id in this.streamPositions)) {
+-                            // Check if this incremental data contains array data for the pending path
+-                            // The pending path is absolute, but incremental data is relative to the defer
+-                            // E.g., pending.path = ["nestedObject"], pendingItem.path = ["nestedObject", "nestedFriendList"]
+-                            // incremental.data = { scalarField: "...", nestedFriendList: [...] }
+-                            // So we need the path from pending.path onwards
+-                            const relativePath = pendingItem.path.slice(pending.path.length);
+-                            const dataAtPath = relativePath.reduce((data, key) => data?.[key], incremental.data);
+-                            if (Array.isArray(dataAtPath)) {
+-                                this.streamPositions[pendingItem.id] = dataAtPath.length;
+-                            }
+-                        }
+-                    });
+-                }
++                }
++                this.initializeStreams(data, path);
+                 this.merge({
+                     data,
+                     extensions: incremental.extensions,
+@@ -164,6 +147,21 @@
+         }
+         return result;
+     }
++    initializeStreams(data, path) {
++        for (const pending of this.pendingMap.values()) {
++            if (pending.id in this.streamPositions ||
++                !path.every((key, index) => pending.path[index] === key)) {
++                continue;
++            }
++            // Use only the delivered prefix: cached arrays can contain unseen tails.
++            const value = pending.path
++                .slice(path.length)
++                .reduce((value, key) => value?.[key], data);
++            if (Array.isArray(value)) {
++                this.streamPositions[pending.id] = value.length;
++            }
++        }
++    }
+     merge(normalized, atPath) {
+         if (normalized.data !== undefined) {
+             this.data = new DeepMerger({ arrayMerge: "truncate" }).merge(this.data, normalized.data, { atPath });
+diff --git a/node_modules/@apollo/client/link/http/parseAndCheckHttpResponse.js b/node_modules/@apollo/client/link/http/parseAndCheckHttpResponse.js
+--- a/node_modules/@apollo/client/link/http/parseAndCheckHttpResponse.js
++++ b/node_modules/@apollo/client/link/http/parseAndCheckHttpResponse.js
+@@ -78,7 +78,7 @@
+         throw new Error("premature end of multipart body");
+     }
+     finally {
+-        reader.cancel();
++        await reader.cancel();
+     }
+ }
+ export async function readMultipartBody(response, nextValue) {
+diff --git a/node_modules/@apollo/client/__cjs/incremental/handlers/graphql17Alpha9.cjs b/node_modules/@apollo/client/__cjs/incremental/handlers/graphql17Alpha9.cjs
+--- a/node_modules/@apollo/client/__cjs/incremental/handlers/graphql17Alpha9.cjs
++++ b/node_modules/@apollo/client/__cjs/incremental/handlers/graphql17Alpha9.cjs
+@@ -93,25 +93,8 @@
+                 }
+                 else {
+                     data = incremental.data;
+-                    // Check if any pending streams added arrays from deferred data so
+-                    // that we can update streamPositions with the initial length of the
+-                    // array to ensure future streamed items are inserted at the right
+-                    // starting index.
+-                    this.pendingMap.forEach((pendingItem) => {
+-                        if (!(pendingItem.id in this.streamPositions)) {
+-                            // Check if this incremental data contains array data for the pending path
+-                            // The pending path is absolute, but incremental data is relative to the defer
+-                            // E.g., pending.path = ["nestedObject"], pendingItem.path = ["nestedObject", "nestedFriendList"]
+-                            // incremental.data = { scalarField: "...", nestedFriendList: [...] }
+-                            // So we need the path from pending.path onwards
+-                            const relativePath = pendingItem.path.slice(pending.path.length);
+-                            const dataAtPath = relativePath.reduce((data, key) => data?.[key], incremental.data);
+-                            if (Array.isArray(dataAtPath)) {
+-                                this.streamPositions[pendingItem.id] = dataAtPath.length;
+-                            }
+-                        }
+-                    });
+-                }
++                }
++                this.initializeStreams(data, path);
+                 this.merge({
+                     data,
+                     extensions: incremental.extensions,
+@@ -167,6 +150,21 @@
+         }
+         return result;
+     }
++    initializeStreams(data, path) {
++        for (const pending of this.pendingMap.values()) {
++            if (pending.id in this.streamPositions ||
++                !path.every((key, index) => pending.path[index] === key)) {
++                continue;
++            }
++            // Use only the delivered prefix: cached arrays can contain unseen tails.
++            const value = pending.path
++                .slice(path.length)
++                .reduce((value, key) => value?.[key], data);
++            if (Array.isArray(value)) {
++                this.streamPositions[pending.id] = value.length;
++            }
++        }
++    }
+     merge(normalized, atPath) {
+         if (normalized.data !== undefined) {
+             this.data = new internal_1.DeepMerger({ arrayMerge: "truncate" }).merge(this.data, normalized.data, { atPath });
+diff --git a/node_modules/@apollo/client/__cjs/link/http/parseAndCheckHttpResponse.cjs b/node_modules/@apollo/client/__cjs/link/http/parseAndCheckHttpResponse.cjs
+--- a/node_modules/@apollo/client/__cjs/link/http/parseAndCheckHttpResponse.cjs
++++ b/node_modules/@apollo/client/__cjs/link/http/parseAndCheckHttpResponse.cjs
+@@ -82,7 +82,7 @@
+         throw new Error("premature end of multipart body");
+     }
+     finally {
+-        reader.cancel();
++        await reader.cancel();
+     }
+ }
+ async function readMultipartBody(response, nextValue) {
