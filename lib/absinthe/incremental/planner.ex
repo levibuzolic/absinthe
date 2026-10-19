@@ -17,7 +17,7 @@ defmodule Absinthe.Incremental.Planner do
 
     collected =
       Enum.reduce(details, initial, fn {field, usage}, acc ->
-        collect(field.selections, usage, parent_type, path, res, acc)
+        collect(field.selections, usage, parent_type, res, acc)
       end)
 
     {fields, partitions, partition_order} =
@@ -103,15 +103,15 @@ defmodule Absinthe.Incremental.Planner do
     end
   end
 
-  defp collect(selections, usage, type, path, res, acc) do
+  defp collect(selections, usage, type, res, acc) do
     Enum.reduce(selections, acc, fn selection, acc ->
-      collect_selection(selection, usage, type, path, res, acc)
+      collect_selection(selection, usage, type, res, acc)
     end)
   end
 
-  defp collect_selection(%{flags: %{skip: _}}, _, _, _, _, acc), do: acc
+  defp collect_selection(%{flags: %{skip: _}}, _, _, _, acc), do: acc
 
-  defp collect_selection(%Blueprint.Document.Field{} = field, usage, type, _, _, acc) do
+  defp collect_selection(%Blueprint.Document.Field{} = field, usage, type, _, acc) do
     field = concrete_field(field, type)
     key = field.alias || field.name
     order = if Map.has_key?(acc.fields, key), do: acc.order, else: [key | acc.order]
@@ -124,13 +124,12 @@ defmodule Absinthe.Incremental.Planner do
          %Blueprint.Document.Fragment.Inline{} = fragment,
          usage,
          type,
-         path,
          res,
          acc
        ) do
     if applies?(fragment.type_condition, type, res.schema) do
-      {usage, acc} = defer(fragment, usage, path, res, acc)
-      collect(fragment.selections, usage, type, path, res, acc)
+      {usage, acc} = defer(Directives.active(fragment, :defer), usage, res, acc)
+      collect(fragment.selections, usage, type, res, acc)
     else
       acc
     end
@@ -140,7 +139,6 @@ defmodule Absinthe.Incremental.Planner do
          %Blueprint.Document.Fragment.Spread{name: name} = spread,
          usage,
          type,
-         path,
          res,
          acc
        ) do
@@ -167,8 +165,8 @@ defmodule Absinthe.Incremental.Planner do
 
       true ->
         acc = %{acc | visited: Map.put(acc.visited, name, MapSet.put(visited, token))}
-        {usage, acc} = defer(spread, usage, path, res, acc)
-        collect(fragment.selections, usage, type, path, res, acc)
+        {usage, acc} = defer(directive, usage, res, acc)
+        collect(fragment.selections, usage, type, res, acc)
     end
   end
 
@@ -200,29 +198,25 @@ defmodule Absinthe.Incremental.Planner do
   defp directive_token(directive, _),
     do: Keyword.fetch!(directive.__private__, :__absinthe_incremental_id)
 
-  defp defer(fragment, parent, path, res, acc) do
-    case Directives.active(fragment, :defer) do
-      nil ->
-        {parent, acc}
+  defp defer(nil, parent, _res, acc), do: {parent, acc}
 
-      {directive, args} ->
-        if res.incremental_subscription do
-          throw({:incremental_subscription, directive})
-        end
-
-        {usage, state} =
-          State.group(
-            acc.state,
-            Map.merge(Map.take(args, [:label]), %{
-              kind: :defer,
-              parent: parent,
-              path: State.path(path),
-              directive_id: directive_token(directive, res)
-            })
-          )
-
-        {usage, %{acc | state: state}}
+  defp defer({directive, args}, parent, res, acc) do
+    if res.incremental_subscription do
+      throw({:incremental_subscription, directive})
     end
+
+    {usage, state} =
+      State.group(
+        acc.state,
+        Map.merge(Map.take(args, [:label]), %{
+          kind: :defer,
+          parent: parent,
+          path: acc.response_path,
+          directive_id: directive_token(directive, res)
+        })
+      )
+
+    {usage, %{acc | state: state}}
   end
 
   defp filtered_usages(details, state) do
