@@ -1,0 +1,136 @@
+# Incremental delivery over HTTP
+
+Run from the repository root:
+
+```sh
+integration/incremental_http/run
+```
+
+Requires Elixir/OTP, Mix/Hex/Rebar, Node.js 24+ and npm. CI pins Node **24.21.0**,
+Elixir **1.19.5** and OTP **28.5**. The runner installs locked dependencies,
+compiles with warnings as errors, exports Absinthe's SDL, runs the Relay compiler,
+checks formatting, and runs both client suites plus parser regressions. Generated
+SDL and Relay artifacts are ignored.
+After setup, `npm test` in this directory runs the HTTP tests.
+
+This is a test-only HTTP adapter. The root Absinthe library has no new transport
+or client dependencies. These tests do not implement incremental HTTP support
+in Absinthe Plug.
+
+## Clients and formats
+
+| Component | Pinned version / revision |
+| --- | --- |
+| Absinthe | Current checkout through a local path dependency |
+| Core proposal | GraphQL spec PR #1110, `045e19363c2b55f127960bd3b5e8072a15b29aec` |
+| Apollo Client | **4.3.4** |
+| Apollo handler / negotiation | `GraphQL17Alpha9Handler`, `multipart/mixed;incrementalSpec=v0.2` |
+| Relay compiler / runtime | **21.0.1**, source `43eaa2587adad2fb10dbac402d900d035fae2f81` |
+| Multipart parser / negotiation | Local JSON multipart parser; application-defined `multipart/mixed;incrementalSpec=relay` |
+| GraphQL client parser | **16.12.0** |
+| Independent execution reference | `graphql-reference` alias for **17.0.2**, source `71606d736c79b77588a15b32b9c9497e397adae0` |
+| RxJS / JSON codec | **7.8.2** / Jason **1.4.4** |
+
+Apollo receives Absinthe's default `incremental_format: :graphql_draft` ID-based
+envelopes. Only `GraphQL17Alpha9Handler` / `incrementalSpec=v0.2` is supported;
+the older `Defer20220824Handler` / `GraphQL17Alpha2Handler` format is unsupported.
+Relay receives the core's
+`incremental_format: :relay` format. The client network layers forward patches
+without translating them or repairing client data. The GraphQL.js reference
+cross-checks client regressions; it is not the Absinthe server or a claim that
+its execution semantics exactly match the pinned proposal.
+
+## Apollo limitations
+
+Stock Apollo **4.3.4** loses data for streams introduced inside streamed items
+because the handler does not initialize the inner list's next position from its
+delivered prefix.
+
+Two nested-stream tests verify correct wire data from Absinthe and GraphQL.js,
+then assert the known stock-client data loss. An inner stream introduced by an
+explicit defer is covered as a successful case. Apollo's multipart cancellation
+rejection was [fixed in 4.3.2](https://github.com/apollographql/apollo-client/pull/13467).
+Live HTTP tests now verify cancellation of queued deferred work, a blocked
+resolver, and a stream after its first item, using stock HttpLink and Fetch.
+The suite runs with strict unhandled rejections and no rejection handlers.
+
+The local multipart parser is a small harness parser for JSON parts, boundaries,
+UTF-8 chunks, truncation, and cancellation. It is not a general MIME parser.
+Relay **21.0.1** remains unmodified.
+
+## What the HTTP tests establish
+
+The Node server listens on a dynamically assigned loopback port. Apollo
+`watchQuery` uses its real `HttpLink`, native Fetch, multipart reader, incremental
+handler and cache. Relay uses operations compiled against exported Absinthe SDL,
+its real `Environment`, `Observable`, normalized store and fragment readers.
+Mutations use `Environment.executeMutation`. Relay enables
+`deferDeduplicatedFields: true`.
+
+Each request has one monitored Elixir worker calling `Absinthe.run_incremental!/3`
+and owning its continuation enumerable. The bridge serializes its original
+payloads. Tests compare client-observed wire payloads with the emitted maps and
+check pending-ID lifecycles for the draft format. There is no test data merger.
+
+Tests grant continuation permits one at a time. Suspended enumeration prevents
+the next resolver from starting before its permit. Resolver traces and explicit
+resolver gates establish ordering without sleeps. Cancellation waits for both
+socket closure and worker `DOWN` before asserting that later work did not run.
+Shutdown checks every worker stopped and awaits BEAM exit; forced termination
+fails the test. These checks do not undo completed side effects or establish
+cancellation of detached resolver-owned tasks or external services.
+
+Coverage includes:
+
+- Aliases, explicit-null labels, variables, initial prefixes, progressive lists, normalized
+  cache writes, nested defer/stream, shared fields and resolver-once behavior.
+- Nested-list nullability in streamed prefixes and non-null rows.
+- Disabled directives, empty/null lists and parents, eager JSON fallback,
+  initial and incremental errors, non-null boundaries and cancellation.
+- Malformed requests, unsupported negotiation, truncated responses, terminal
+  markers, closed sockets and stopped request workers.
+- Relay named fragments, deduplicated deferred ancestors, abstract types and
+  discriminators, nullable streamed items and error paths.
+- Deferred groups that acquire their first work only after a shared linked
+  field resolves, including progressive fragment reads and resolver-once checks.
+- Reused eager fragments retaining their abstract-type discriminators when
+  deferred snapshots omit unrelated fields.
+- Compiled `@stream_connection`, deferred page info, cursor pagination, and
+  subsequent null-edge pages without duplicate nodes or cursor warnings.
+- Overlapping Relay and Apollo requests to the same endpoint, each retaining
+  its negotiated format and independent continuation demand.
+- Compiled Relay mutations with suspended eager work before the second root;
+  deferred demand; late deferred failure retaining already executed mutations
+  while stopping later deferred work.
+
+Relay's network rejects multipart EOF without both terminal markers. For an
+ordinary JSON fallback, it adds `extensions.is_final: true` before forwarding
+to Relay, while retaining the unchanged raw wire payload for comparison.
+
+Relay cannot represent isolated failed completion notices: a failed boundary
+terminates the operation. Null streamed items require a final accumulated
+snapshot, and the tests assert the resulting data, errors and expected Relay
+development warning. Scalar-list streaming is compiler-rejected; customized
+batching is unsupported. See the [Relay contract](../../guides/incremental-delivery.md#relay-compatibility).
+
+Relay 21.0.1 can emit duplicate defer labels when a fragment containing `@defer`
+is specialized with distinct `@arguments` values ([Relay #5270](https://github.com/facebook/relay/issues/5270)).
+The harness compiles this pattern and verifies that the unchanged operation is
+rejected over HTTP before execution. Absinthe requires unique literal labels in
+both formats; valid labeled Relay operations remain supported.
+
+Parts include the following boundary immediately, allowing clients to observe
+initial data while later work is gated. Fragmented-write tests do not control
+TCP or Fetch chunk boundaries. The negotiation helper recognizes only the
+tested v0.2, Relay and JSON alternatives, ignores `q=0`, and returns 406 for
+unsupported-only choices. The Relay negotiation parameter is application-defined.
+
+## Verification limits
+
+The GitHub Actions workflow runs this harness for pull requests and pushes to
+main.
+
+This suite does not certify a production Absinthe Plug adapter, browsers,
+reverse proxies, compression, HTTP/2, SSE, WebSockets or general socket
+backpressure. It verifies the listed client versions and formats over the
+local test transport; Apollo behavior is verified against the stock 4.3.4 client.

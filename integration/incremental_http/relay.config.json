@@ -1,0 +1,6 @@
+{
+  "src": "./relay",
+  "schema": "./relay/schema.graphql",
+  "language": "javascript",
+  "eagerEsModules": true
+}
