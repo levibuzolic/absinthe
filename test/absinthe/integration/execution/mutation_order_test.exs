@@ -364,6 +364,51 @@ defmodule Absinthe.Integration.Execution.MutationOrderTest do
            ]
   end
 
+  test "BatchResolver completes unequal mutation documents independently" do
+    alias Absinthe.{Phase, Pipeline}
+
+    queries = [
+      "mutation { one: secondAsync { id } two: secondBatch { id } three: secondLoaded { id } }",
+      "mutation { immediateFailure { id } second { id } }",
+      "mutation { only: secondBatch { id } }"
+    ]
+
+    options = [context: %{test_pid: self()}]
+
+    expected =
+      Enum.map(queries, fn query ->
+        assert {:ok, result} = Absinthe.run(query, Schema, options)
+        result
+      end)
+
+    expected_events = trace() |> Enum.frequencies()
+
+    pipeline =
+      Schema
+      |> Pipeline.for_document(options)
+      |> Pipeline.before(Phase.Document.Execution.Resolution)
+
+    for documents <- [Enum.zip(queries, expected), Enum.zip(queries, expected) |> Enum.reverse()] do
+      blueprints =
+        Enum.map(documents, fn {query, _expected} ->
+          assert {:ok, blueprint, _} = Pipeline.run(query, pipeline)
+          blueprint
+        end)
+
+      results = Pipeline.BatchResolver.run(blueprints, schema: Schema)
+      assert length(results) == length(documents)
+
+      for {blueprint, {_query, expected}} <- Enum.zip(results, documents) do
+        assert blueprint.execution.pending == []
+        assert blueprint.execution.resolved == %{}
+        assert blueprint.execution.mutation == nil
+        assert {:ok, %{result: ^expected}} = Phase.Document.Result.run(blueprint, [])
+      end
+
+      assert trace() |> Enum.frequencies() == expected_events
+    end
+  end
+
   defp execute(query, context \\ %{}) do
     supervisor = start_supervised!(Task.Supervisor, id: make_ref())
     pid = self()
