@@ -113,6 +113,12 @@ snapshot, and the tests assert the resulting data, errors and expected Relay
 development warning. Scalar-list streaming is compiler-rejected; customized
 batching is unsupported. See the [Relay contract](../../guides/incremental-delivery.md#relay-compatibility).
 
+Relay 21.0.1 can emit duplicate defer labels when a fragment containing `@defer`
+is specialized with distinct `@arguments` values ([Relay #5270](https://github.com/facebook/relay/issues/5270)).
+The harness compiles this pattern and verifies that the unchanged operation is
+rejected over HTTP before execution. Absinthe requires unique literal labels in
+both formats; valid labeled Relay operations remain supported.
+
 Parts include the following boundary immediately, allowing clients to observe
 initial data while later work is gated. Fragmented-write tests do not control
 TCP or Fetch chunk boundaries. The negotiation helper recognizes only the

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parse, visit } from "graphql";
 
 import { observeRelay } from "./relay-client.mjs";
 import { data, observe as observeApollo } from "./client.mjs";
@@ -20,6 +21,7 @@ import DeferQuery from "./relay/__generated__/RelayDeferQuery.graphql.js";
 import FailureQuery from "./relay/__generated__/RelayCasesFailureQuery.graphql.js";
 import FatalQuery from "./relay/__generated__/RelayCasesFatalQuery.graphql.js";
 import LateWorkQuery from "./relay/__generated__/RelayCasesLateWorkQuery.graphql.js";
+import LabelVariantsQuery from "./relay/__generated__/RelayLabelVariantsQuery.graphql.js";
 import NestedQuery from "./relay/__generated__/RelayCasesNestedQuery.graphql.js";
 import NestedStreamsQuery from "./relay/__generated__/RelayCasesNestedStreamsQuery.graphql.js";
 import NullEdgeConnectionQuery from "./relay/__generated__/RelayConnectionQueryNullEdgeQuery.graphql.js";
@@ -541,6 +543,45 @@ test("null streamed objects retain their slots through a final Relay snapshot", 
   ]);
   assert.equal(final.isMissingData, false);
   verifyWarning();
+});
+
+test("Relay argument variants with duplicated defer labels fail validation before execution", async () => {
+  const labels = [];
+  visit(parse(LabelVariantsQuery.params.text), {
+    Directive(node) {
+      if (node.name.value === "defer")
+        labels.push(
+          node.arguments.find((arg) => arg.name.value === "label").value.value,
+        );
+    },
+  });
+  assert.equal(labels.length, 2);
+  assert.equal(labels[0], labels[1]);
+
+  const id = "relay-duplicate-labels";
+  const response = await fetch(server.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "multipart/mixed;incrementalSpec=relay",
+      "x-test-id": id,
+    },
+    body: JSON.stringify({ query: LabelVariantsQuery.params.text }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/json");
+  const result = await response.json();
+  assert.deepEqual(
+    result.errors.map((error) => error.message),
+    [`Incremental directive label \`${labels[0]}\` must be unique.`],
+  );
+  await server.wait(
+    id,
+    (s) => s.closed && s.stopped,
+    "validation response complete",
+  );
+  assert.equal(server.sessions.get(id).stopped, ":normal");
+  assert.deepEqual(paths(id), []);
 });
 
 test("the pinned Relay compiler rejects scalar-list streaming", async (t) => {

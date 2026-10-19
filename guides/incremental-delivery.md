@@ -328,6 +328,14 @@ Relay's
 and [network-layer guide](https://relay.dev/docs/guides/network-layer/) describe
 these integration points.
 
+Relay 21.0.1 can generate duplicate defer labels when a fragment containing
+`@defer` is specialized with distinct `@arguments` values
+([Relay #5270](https://github.com/facebook/relay/issues/5270)). Absinthe rejects
+these compiled operations before execution, including in `:relay` mode. Keep
+literal labels unique by moving the deferred selection outside the parameterized
+fragment or using distinct fragments for the variants. Valid labeled operations
+remain supported.
+
 The formatter supplies accumulated snapshots for completed deferred fragments,
 including parent fragments with no independent work after deduplication. This
 preserves shared fields, object identity, abstract types, and deferred selections
