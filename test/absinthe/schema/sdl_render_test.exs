@@ -124,7 +124,11 @@ defmodule Absinthe.Schema.SdlRenderTest do
 
     def string_default, do: @string_default
 
-    import_directives Absinthe.Type.BuiltIns.IncrementalDirectives
+    directive :export_config do
+      arg :enabled, non_null(:boolean), default_value: true
+      arg :count, non_null(:integer), default_value: 0
+      on [:field]
+    end
 
     scalar :code do
       serialize fn value -> "code:#{value}" end
@@ -176,11 +180,7 @@ defmodule Absinthe.Schema.SdlRenderTest do
   test "macro defaults use their GraphQL types without starting the schema provider" do
     sdl = Absinthe.Schema.to_sdl(DefaultValuesSchema)
 
-    assert sdl =~
-             "directive @defer(label: String, if: Boolean! = true) on FRAGMENT_SPREAD | INLINE_FRAGMENT"
-
-    assert sdl =~
-             "directive @stream(initialCount: Int! = 0, label: String, if: Boolean! = true) on FIELD"
+    assert sdl =~ "directive @exportConfig(count: Int! = 0, enabled: Boolean! = true) on FIELD"
 
     assert sdl =~ ~s(code: Code = "code:blue")
     assert sdl =~ "order: ExportOrder! = ASCENDING"

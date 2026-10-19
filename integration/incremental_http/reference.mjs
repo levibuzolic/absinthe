@@ -1,6 +1,6 @@
 // Independent execution-engine probe for the client limitations. This uses
 // the same JSON-lines control channel and HTTP encoder, but every GraphQL
-// payload is produced unchanged by graphql@17.0.0-alpha.9.
+// payload is produced unchanged by graphql@17.0.2.
 import { createInterface } from "node:readline";
 import {
   buildSchema,

@@ -172,7 +172,7 @@ defmodule Absinthe do
   Relay format retains a snapshot of delivered data for fragment normalization.
   A failed incremental boundary terminates the Relay operation, and nullable
   streamed items require a final full-response replay. See the incremental
-  delivery guide for these compatibility details and the HTTP client tests.
+  delivery guide for these compatibility details.
   """
   @spec run_incremental(
           binary | Absinthe.Language.Source.t() | Absinthe.Language.Document.t(),

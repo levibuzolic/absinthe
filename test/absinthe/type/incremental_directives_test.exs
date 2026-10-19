@@ -59,6 +59,19 @@ defmodule Absinthe.Type.IncrementalDirectivesTest do
     refute "stream" in names
   end
 
+  test "SDL export preserves the imported directives and their defaults" do
+    sdl = Schema.to_sdl(OptInSchema)
+
+    assert sdl =~
+             "directive @defer(label: String, if: Boolean! = true) on FRAGMENT_SPREAD | INLINE_FRAGMENT"
+
+    assert sdl =~
+             "directive @stream(initialCount: Int! = 0, label: String, if: Boolean! = true) on FIELD"
+
+    refute Schema.to_sdl(DefaultSchema) =~ "directive @defer"
+    refute Schema.to_sdl(DefaultSchema) =~ "directive @stream"
+  end
+
   test "imported directives expose the draft definition through introspection" do
     assert Schema.lookup_directive(OptInSchema, :defer)
     assert Schema.lookup_directive(OptInSchema, :stream)

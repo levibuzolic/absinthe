@@ -269,6 +269,32 @@ test("Relay streams aliased objects progressively using variable initialCount", 
   assert.equal(client.raw.at(-1).extensions.is_final, true);
 });
 
+test("Relay unsubscribe cancels queued streamed items after the first item", async (t) => {
+  const client = observeRelay(server, t, StreamQuery, {
+    variables: { initial: 0, enabled: true },
+  });
+  assert.deepEqual(data(await client.initial()), { roster: [] });
+  await client.next();
+  assert.deepEqual(data(client.read()), {
+    roster: [{ id: "1", name: "Ada" }],
+  });
+
+  client.subscription.unsubscribe();
+  await server.wait(
+    client.id,
+    (s) => s.closed && s.stopped === ":killed",
+    "Relay stream cancellation after first item",
+  );
+  assert.deepEqual(data(client.read()), {
+    roster: [{ id: "1", name: "Ada" }],
+  });
+  assert.ok(
+    !paths(client.id).some(
+      (path) => path[0] === "roster" && [1, 2].includes(path[1]),
+    ),
+  );
+});
+
 test("disabled incremental directives produce an ordinary Relay result", async (t) => {
   const client = observeRelay(server, t, StreamQuery, {
     variables: { initial: 0, enabled: false },

@@ -251,8 +251,8 @@ The repository includes a client-over-HTTP test harness in
 `integration/incremental_http`, using Apollo Client's `GraphQL17Alpha9Handler`,
 Relay's compiler and runtime, and a test-only local multipart adapter. Run it with
 `integration/incremental_http/run`. Its README records pinned versions,
-verified cases, and client limitations. It characterizes two stock Apollo 4.3.1
-limitations for nested streams and cancellation; it does not add production
+verified cases, and client limitations. It characterizes stock Apollo 4.3.4's
+nested stream limitation and verifies cancellation; it does not add production
 incremental support to Absinthe Plug.
 
 ## Select a client format
@@ -261,9 +261,9 @@ One schema can serve both clients. Select the response format for each request.
 The default `:graphql_draft` format targets proposal #1110 at the revision pinned
 above; its supported Apollo protocol is `GraphQL17Alpha9Handler` / `incrementalSpec=v0.2`.
 
-| Tested client | Execution option | Response format |
+| Client / handler | Execution option | Response format |
 | --- | --- | --- |
-| Apollo Client 4.3.1, `GraphQL17Alpha9Handler` | `incremental_format: :graphql_draft` (default) | IDs with `pending`, `incremental`, `completed` and `hasNext` |
+| Apollo Client 4.3.4, `GraphQL17Alpha9Handler` | `incremental_format: :graphql_draft` (default) | IDs with `pending`, `incremental`, `completed` and `hasNext` |
 | Relay 21.0.1 | `incremental_format: :relay` | Labeled `data`/`path` patches and `extensions.is_final` |
 
 Both formats use the same directive validation, field collection and execution.
@@ -290,11 +290,10 @@ Apollo's `Defer20220824Handler` and `GraphQL17Alpha2Handler` are aliases for the
 same older wire format (`deferSpec=20220824`), which is not supported. See
 [Apollo's handler documentation](https://www.apollographql.com/docs/react/data/defer)
 and [incremental v0.2](https://specs.apollo.dev/incremental/v0.2/).
-Apollo 4.3.1 loses items when a stream is introduced directly inside a streamed
-item, and HttpLink cancellation can produce an unhandled `AbortError`. The
-harness records these client failures without patches and verifies the nested
+Apollo 4.3.4 loses items when a stream is introduced directly inside a streamed
+item. The harness records this client failure without patches and verifies the nested
 wire data against GraphQL.js. Introducing the inner stream through an explicit
-defer is supported. Relay's client tests cover successful request cancellation.
+defer is supported. Both clients' HTTP tests cover successful request cancellation.
 
 ## Relay compatibility
 

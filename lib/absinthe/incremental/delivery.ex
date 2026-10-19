@@ -158,7 +158,9 @@ defmodule Absinthe.Incremental.Delivery do
       Enum.reduce(refs, {[], state}, fn ref, {notices, state} ->
         group = state.groups[ref]
 
-        if State.has_work?(state, ref) or State.has_buffered?(state, ref) do
+        if not group.done and
+             (State.has_work?(state, ref) or State.has_buffered?(state, ref) or
+                Map.has_key?(group, :errors)) do
           case blocked_on(state, group) do
             nil ->
               id = Integer.to_string(map_size(state.group_ids))
@@ -239,7 +241,15 @@ defmodule Absinthe.Incremental.Delivery do
     state = State.cancel_waiters(state, dependencies)
 
     Enum.reduce(failed, state, fn ref, state ->
-      put_in(state.groups[ref][:errors], errors)
+      if MapSet.member?(frame.groups, ref) or state.groups[ref].id != nil do
+        # A shared task can fail before an owning fragment's parent completes.
+        # Retain its failure until that fragment can be announced and completed.
+        put_in(state.groups[ref][:errors], errors)
+      else
+        # Unannounced descendants have no deliverable parent. Already announced
+        # descendants still require a completion notice to close their IDs.
+        put_in(state.groups[ref].done, true)
+      end
     end)
   end
 
