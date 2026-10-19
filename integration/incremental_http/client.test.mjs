@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { startServer } from "./server.mjs";
 import { data, observe as observeClient } from "./client.mjs";
 
@@ -58,6 +56,26 @@ test("Apollo writes deferred data and streamed items into its normalized cache",
       { id: "3", name: "Edsger" },
     ],
   });
+  assert.deepEqual(data(operation.cached()), data(final));
+});
+
+test("Apollo retains repeated list selections while a defer is pending", async (t) => {
+  const operation = observe(
+    t,
+    "{ people { id } people { name } person { id ... @defer { name } } }",
+    { fetchPolicy: "network-only" },
+  );
+  const people = [
+    { id: "1", name: "Ada" },
+    { id: "2", name: "Grace" },
+    { id: "3", name: "Edsger" },
+  ];
+  assert.deepEqual(data(await operation.initial()), {
+    people,
+    person: { id: "1" },
+  });
+  const final = await operation.finish();
+  assert.deepEqual(data(final), { people, person: { id: "1", name: "Ada" } });
   assert.deepEqual(data(operation.cached()), data(final));
 });
 
@@ -257,7 +275,7 @@ for (const initialCount of [0, 1]) {
         { friends: null },
         { friends: null },
       ]);
-      // Apollo 4.3.1 never initializes a nested stream introduced by items.
+      // Apollo 4.3.4 never initializes a nested stream introduced by items.
       // Characterize its silent data loss without changing either engine's data.
       assert.deepEqual(data(final), {
         people: [{ friends: [] }, { friends: null }, { friends: null }],
@@ -388,6 +406,32 @@ test("non-null deferred failures complete the ID with errors and suppress descen
       .flatMap((p) => p.pending ?? [])
       .some((p) => p.label === "unreachable"),
   );
+});
+
+test("a newly visible defer with a shared failure is announced and completed without running later fields", async (t) => {
+  const operation = observe(
+    t,
+    `{
+      person {
+        id
+        ... @defer(label: "R") { requiredFailure }
+        ... @defer(label: "P") {
+          name
+          ... @defer(label: "C") { requiredFailure slow }
+        }
+      }
+    }`,
+  );
+  assert.deepEqual(data(await operation.initial()), { person: { id: "1" } });
+  const final = await operation.finish({ expectErrors: true });
+  assert.deepEqual(data(final), { person: { id: "1", name: "Ada" } });
+  const terminal = operation.raw.at(-1);
+  const child = terminal.pending.find((pending) => pending.label === "C");
+  assert.deepEqual(child.path, ["person"]);
+  const completion = terminal.completed.find(({ id }) => id === child.id);
+  assert.deepEqual(completion.errors[0].path, ["person", "requiredFailure"]);
+  assert.equal(completion.errors[0].message, "required value unavailable");
+  assert.ok(!paths(operation.id).some((path) => path.at(-1) === "slow"));
 });
 
 test("a deferred group spanning list items publishes only after all private tasks succeed", async (t) => {
@@ -538,26 +582,59 @@ test("initial non-null errors and invalid variables return ordinary GraphQL erro
   assert.deepEqual(paths(invalid.id), []);
 });
 
-test("stock Apollo HttpLink emits an unhandled AbortError when cancelling multipart delivery", async () => {
-  await assert.rejects(
-    promisify(execFile)(
-      process.execPath,
-      ["--unhandled-rejections=strict", "cancellation.mjs"],
-      {
-        cwd: new URL(".", import.meta.url),
-        timeout: 20_000,
-      },
-    ),
-    (error) => {
-      assert.equal(error.code, 1);
-      assert.equal(error.signal, null);
-      assert.equal(error.stdout.trim(), "INITIAL_PAYLOAD_OBSERVED");
-      assert.match(
-        error.stderr,
-        /DOMException \[AbortError\]: Stock Apollo multipart cancellation/,
+for (const executing of [false, true]) {
+  test(`Apollo unsubscribe cancels ${executing ? "executing" : "queued"} deferred work`, async (t) => {
+    const operation = observe(t, "{ person { id ... @defer { slow name } } }");
+    assert.deepEqual(data(await operation.initial()), { person: { id: "1" } });
+    if (executing) {
+      server.next(operation.id);
+      await server.wait(
+        operation.id,
+        (s) => s.events.some((e) => e.event === "blocked"),
+        "deferred resolver blocked",
       );
-      return true;
-    },
+    }
+    const delivered = operation.raw.length;
+    operation.subscription.unsubscribe();
+    await server.wait(
+      operation.id,
+      (s) => s.closed && s.stopped === ":killed",
+      "Apollo Fetch cancellation and worker shutdown",
+    );
+    assert.equal(operation.raw.length, delivered);
+    assert.equal(delivered, 1);
+    assert.deepEqual(paths(operation.id), [
+      ["person"],
+      ["person", "id"],
+      ...(executing ? [["person", "slow"]] : []),
+    ]);
+  });
+}
+
+test("Apollo unsubscribe retains the streamed prefix and cancels later items", async (t) => {
+  const operation = observe(
+    t,
+    "{ people @stream(initialCount: 0) { id name } }",
+  );
+  await operation.initial();
+  await operation.next();
+  assert.deepEqual(data(operation.results.at(-1)), {
+    people: [{ id: "1", name: "Ada" }],
+  });
+  operation.subscription.unsubscribe();
+  await server.wait(
+    operation.id,
+    (s) => s.closed && s.stopped === ":killed",
+    "Apollo stream cancellation after first item",
+  );
+  assert.deepEqual(data(operation.results.at(-1)), {
+    people: [{ id: "1", name: "Ada" }],
+  });
+  assert.equal(operation.raw.length, 2);
+  assert.ok(
+    !paths(operation.id).some(
+      (path) => path[0] === "people" && [1, 2].includes(path[1]),
+    ),
   );
 });
 

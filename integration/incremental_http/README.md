@@ -23,12 +23,12 @@ in Absinthe Plug.
 | --- | --- |
 | Absinthe | Current checkout through a local path dependency |
 | Core proposal | GraphQL spec PR #1110, `045e19363c2b55f127960bd3b5e8072a15b29aec` |
-| Apollo Client | **4.3.1** |
+| Apollo Client | **4.3.4** |
 | Apollo handler / negotiation | `GraphQL17Alpha9Handler`, `multipart/mixed;incrementalSpec=v0.2` |
 | Relay compiler / runtime | **21.0.1**, source `43eaa2587adad2fb10dbac402d900d035fae2f81` |
 | Multipart parser / negotiation | Local JSON multipart parser; application-defined `multipart/mixed;incrementalSpec=relay` |
 | GraphQL client parser | **16.12.0** |
-| Independent execution reference | `graphql-reference` alias for **17.0.0-alpha.9**, source `3283f8adf52e77a47f148ff2f30185c8d11ff0f0` |
+| Independent execution reference | `graphql-reference` alias for **17.0.2**, source `71606d736c79b77588a15b32b9c9497e397adae0` |
 | RxJS / JSON codec | **7.8.2** / Jason **1.4.4** |
 
 Apollo receives Absinthe's default `incremental_format: :graphql_draft` ID-based
@@ -42,21 +42,17 @@ its execution semantics exactly match the pinned proposal.
 
 ## Apollo limitations
 
-Stock Apollo **4.3.1** has two limitations characterized by this harness:
-
-- Streams introduced inside streamed items lose data because the handler does
-  not initialize the inner list's next position from its delivered prefix.
-- HttpLink cancellation aborts Fetch, and its multipart reader can produce an
-  unhandled `AbortError`.
+Stock Apollo **4.3.4** loses data for streams introduced inside streamed items
+because the handler does not initialize the inner list's next position from its
+delivered prefix.
 
 Two nested-stream tests verify correct wire data from Absinthe and GraphQL.js,
 then assert the known stock-client data loss. An inner stream introduced by an
-explicit defer is covered as a successful case. A third characterization uses
-public ApolloClient/HttpLink APIs and an abortable Fetch response in a child
-process: initial delivery succeeds, then cancellation must produce the known
-unhandled `AbortError`. These tests run without skips or rejection handlers;
-they do not establish successful Apollo cancellation. Relay and the core tests
-cover successful request cancellation.
+explicit defer is covered as a successful case. Apollo's multipart cancellation
+rejection was [fixed in 4.3.2](https://github.com/apollographql/apollo-client/pull/13467).
+Live HTTP tests now verify cancellation of queued deferred work, a blocked
+resolver, and a stream after its first item, using stock HttpLink and Fetch.
+The suite runs with strict unhandled rejections and no rejection handlers.
 
 The local multipart parser is a small harness parser for JSON parts, boundaries,
 UTF-8 chunks, truncation, and cancellation. It is not a general MIME parser.
@@ -131,4 +127,4 @@ main.
 This suite does not certify a production Absinthe Plug adapter, browsers,
 reverse proxies, compression, HTTP/2, SSE, WebSockets or general socket
 backpressure. It verifies the listed client versions and formats over the
-local test transport; Apollo behavior is verified against the stock 4.3.1 client.
+local test transport; Apollo behavior is verified against the stock 4.3.4 client.
