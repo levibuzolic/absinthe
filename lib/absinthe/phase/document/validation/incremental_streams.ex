@@ -31,10 +31,7 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalStreams do
 
     state =
       Enum.reduce(definitions, state, fn {definition, id}, state ->
-        {_fields, state} =
-          validate_set({[id], definition.schema_node, definition.selections}, fragments, state)
-
-        state
+        validate_set({[id], definition.schema_node, definition.selections}, fragments, state)
       end)
 
     {:ok, %{input | errors: input.errors ++ Enum.reverse(state.errors)}}
@@ -43,47 +40,41 @@ defmodule Absinthe.Phase.Document.Validation.IncrementalStreams do
   # Cache original selection sets and pairs, rather than every combination of
   # merged sets. Reused fragments can otherwise create exponentially many sets.
   defp validate_set({origin, parent_type, selections}, fragments, state) do
-    case Map.fetch(state.fields, origin) do
-      {:ok, {fields, _contains_stream?}} ->
-        {fields, state}
+    if Map.has_key?(state.fields, origin) do
+      state
+    else
+      {fields, _} =
+        collect_fields(selections, origin, parent_type, fragments, {[], MapSet.new()})
 
-      :error ->
-        {fields, _} =
-          collect_fields(selections, origin, parent_type, fragments, {[], MapSet.new()})
+      fields =
+        fields
+        |> Enum.reverse()
+        |> Enum.group_by(fn {_id, field, _parent_type} -> field.alias || field.name end)
 
-        fields =
-          fields
-          |> Enum.reverse()
-          |> Enum.group_by(fn {_id, field, _parent_type} -> field.alias || field.name end)
+      state = %{state | fields: Map.put(state.fields, origin, {fields, false})}
+      ordered_fields = Enum.sort_by(fields, &elem(&1, 0))
 
-        state = %{state | fields: Map.put(state.fields, origin, {fields, false})}
-        ordered_fields = Enum.sort_by(fields, &elem(&1, 0))
-
-        state =
-          Enum.reduce(ordered_fields, state, fn {_name, fields}, state ->
-            Enum.reduce(fields, state, fn field, state ->
-              {_fields, state} = validate_set(children(field, state.schema), fragments, state)
-              state
-            end)
+      state =
+        Enum.reduce(ordered_fields, state, fn {_name, fields}, state ->
+          Enum.reduce(fields, state, fn field, state ->
+            validate_set(children(field, state.schema), fragments, state)
           end)
+        end)
 
-        contains_stream? =
-          Enum.any?(fields, fn {_name, fields} ->
-            Enum.any?(fields, &streaming_field?(&1, state))
-          end)
+      contains_stream? =
+        Enum.any?(fields, fn {_name, fields} ->
+          Enum.any?(fields, &streaming_field?(&1, state))
+        end)
 
-        state = %{state | fields: Map.put(state.fields, origin, {fields, contains_stream?})}
+      state = %{state | fields: Map.put(state.fields, origin, {fields, contains_stream?})}
 
-        state =
-          if contains_stream? do
-            Enum.reduce(ordered_fields, state, fn {name, fields}, state ->
-              validate_pairs(fields, fields, name, state)
-            end)
-          else
-            state
-          end
-
-        {fields, state}
+      if contains_stream? do
+        Enum.reduce(ordered_fields, state, fn {name, fields}, state ->
+          validate_pairs(fields, fields, name, state)
+        end)
+      else
+        state
+      end
     end
   end
 

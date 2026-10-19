@@ -3,6 +3,7 @@ defmodule Absinthe.Incremental.Planner do
 
   alias Absinthe.{Blueprint, Type}
   alias Absinthe.Incremental.{Directives, State}
+  alias Absinthe.Resolution.Projector
 
   def project(parent, parent_type, source, path, res) do
     details = Map.get(parent, :field_details) || [{parent, nil}]
@@ -112,7 +113,7 @@ defmodule Absinthe.Incremental.Planner do
   defp collect_selection(%{flags: %{skip: _}}, _, _, _, acc), do: acc
 
   defp collect_selection(%Blueprint.Document.Field{} = field, usage, type, _, acc) do
-    field = concrete_field(field, type)
+    field = Projector.concrete_field(field, type)
     key = field.alias || field.name
     order = if Map.has_key?(acc.fields, key), do: acc.order, else: [key | acc.order]
     fields = Map.update(acc.fields, key, [{field, usage}], &[{field, usage} | &1])
@@ -252,16 +253,6 @@ defmodule Absinthe.Incremental.Planner do
     end)
   end
 
-  defp concrete_field(%{name: "__" <> _} = field, type), do: %{field | parent_type: type}
-
-  defp concrete_field(field, type) do
-    %{
-      field
-      | parent_type: type,
-        schema_node: Map.fetch!(type.fields, field.schema_node.identifier)
-    }
-  end
-
   defp applies?(nil, _, _), do: true
   defp applies?(%{schema_node: node}, type, schema), do: applies?(node, type, schema)
 
@@ -269,11 +260,5 @@ defmodule Absinthe.Incremental.Planner do
     applies?(Absinthe.Schema.lookup_type(schema, condition), type, schema)
   end
 
-  defp applies?(%Type.Object{name: name}, %Type.Object{name: name}, _), do: true
-
-  defp applies?(%Type.Interface{} = condition, type, _),
-    do: Type.Interface.member?(condition, type)
-
-  defp applies?(%Type.Union{} = condition, type, _), do: Type.Union.member?(condition, type)
-  defp applies?(_, _, _), do: false
+  defp applies?(condition, type, _schema), do: Projector.applies?(condition, type)
 end
