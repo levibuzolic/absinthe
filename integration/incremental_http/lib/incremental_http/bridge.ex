@@ -5,9 +5,7 @@ defmodule IncrementalHTTP.Bridge do
     use Absinthe.Phase
 
     # Probe mixed atom/string extension keys before Relay formatting and JSON encoding.
-    def run(blueprint, options) do
-      {:ok, blueprint} = Absinthe.Phase.Document.Result.run(blueprint, options)
-
+    def run(blueprint, _options) do
       extensions = %{
         :is_final => "reserved atom",
         "is_final" => "reserved string",
@@ -96,7 +94,7 @@ defmodule IncrementalHTTP.Bridge do
           options =
             if format == :relay do
               Keyword.put(options, :pipeline_modifier, fn pipeline, _ ->
-                Absinthe.Pipeline.replace(
+                Absinthe.Pipeline.insert_after(
                   pipeline,
                   Absinthe.Phase.Document.Result,
                   RelayExtensions
