@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add opt-in incremental delivery for `@defer` and `@stream` through
+  `Absinthe.run_incremental/3` and `Absinthe.run_incremental!/3`, including
+  Relay-compatible response formatting; support targets the GraphQL draft
+  proposal documented in the [incremental delivery guide](guides/incremental-delivery.md)
+
 ## [1.12.0](https://github.com/absinthe-graphql/absinthe/compare/v1.11.0...v1.12.0) (2026-09-02)
 
 
